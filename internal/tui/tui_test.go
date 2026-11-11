@@ -303,3 +303,33 @@ func TestRateBoxPinnedBottomLeft(t *testing.T) {
 		t.Fatal("rate box shown in main fullscreen")
 	}
 }
+
+// Inside the main panel ←/→ switch tabs; esc returns to the side list.
+func TestMainArrowsSwitchTabs(t *testing.T) {
+	ep, _ := mihomoapi.ParseEndpoint("127.0.0.1:1")
+	app := New(Options{Client: mihomoapi.New(ep, ""), DelayTest: mihomoapi.DelayTest{URL: "http://x", Timeout: time.Second}})
+	defer app.Close()
+	app.Update(teaWindowSize(120, 30))
+	press(app, "enter") // status panel: 概览 / 日志
+	tab := func() int { return app.tabs[app.focus] }
+	press(app, "right")
+	if !app.inMain || tab() != 1 {
+		t.Fatalf("right: inMain=%v tab=%d", app.inMain, tab())
+	}
+	press(app, "l") // wraps around
+	if tab() != 0 {
+		t.Fatalf("l should wrap to 0, got %d", tab())
+	}
+	press(app, "left")
+	if tab() != 1 || !app.inMain {
+		t.Fatalf("left: inMain=%v tab=%d", app.inMain, tab())
+	}
+	press(app, "esc")
+	if app.inMain {
+		t.Fatal("esc should return to the side list")
+	}
+	press(app, "right") // on the side, → still switches panels
+	if app.cur().title() != "代理组" {
+		t.Fatalf("side right went to %s", app.cur().title())
+	}
+}

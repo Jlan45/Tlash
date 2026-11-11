@@ -380,9 +380,13 @@ func (a *App) handleSideKey(msg tea.KeyPressMsg) tea.Cmd {
 func (a *App) handleMainKey(msg tea.KeyPressMsg) tea.Cmd {
 	p, tab := a.cur(), a.tabs[a.focus]
 	switch msg.String() {
-	case "esc", "left", "h", "tab":
+	case "esc", "tab":
 		a.inMain = false
 		return nil
+	case "left", "h":
+		return a.switchTab(-1)
+	case "right", "l":
+		return a.switchTab(1)
 	}
 	if p.interactive(tab) {
 		if cmd, ok := p.mainKey(tab, msg); ok {
@@ -691,12 +695,15 @@ func (a *App) renderStatusBar() string {
 	hints := []hint{}
 	if a.inMain {
 		hints = append(hints, hint{"esc", "返回"})
+		if len(a.cur().tabs()) > 1 {
+			hints = append(hints, hint{"←/→", "标签"})
+		}
 	}
 	for _, ac := range a.contextActions() {
 		hints = append(hints, hint{ac.key, ac.desc})
 	}
 	hints = shortHints(hints, 5)
-	if len(a.cur().tabs()) > 1 {
+	if len(a.cur().tabs()) > 1 && !a.inMain {
 		hints = append(hints, hint{"[ ]", "标签"})
 	}
 	hints = append(hints, hint{"x", "菜单"}, hint{"?", "帮助"})
@@ -733,11 +740,12 @@ func (a *App) renderHelp() string {
 	}
 	lines = append(lines, "", styleTitle.Render("全局"), "")
 	for _, g := range []hint{
-		{"←/→ h/l tab", "切换左侧面板"},
+		{"←/→ h/l tab（左侧）", "切换左侧面板"},
 		{fmt.Sprintf("1-%d", len(a.panels)), "直接聚焦面板"},
 		{"j/k ↑/↓ g/G", "移动 / 首尾"},
-		{"enter / esc", "进入主面板 / 返回"},
+		{"enter / esc", "进入主面板 / 返回左侧"},
 		{"[ ]", "切换主面板标签"},
+		{"←/→ h/l（主面板内）", "切换主面板标签"},
 		{"/", "过滤当前列表"},
 		{"x", "当前可用操作菜单"},
 		{"+ / _", "屏幕模式：普通 / 主面板加宽 / 全屏"},
