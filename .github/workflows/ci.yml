@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  # Pinned so integration tests are reproducible; bump deliberately.
+  MIHOMO_VERSION: v1.19.34
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then echo "未格式化的文件:"; echo "$unformatted"; exit 1; fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Download mihomo for integration tests
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$MIHOMO_VERSION" -R MetaCubeX/mihomo \
+            --pattern "mihomo-linux-amd64-compatible-${MIHOMO_VERSION}.gz" -O mihomo.gz
+          gunzip mihomo.gz && chmod +x mihomo && ./mihomo -v
+          echo "TLASH_MIHOMO_BIN=$PWD/mihomo" >> "$GITHUB_ENV"
+
+      - name: go test
+        run: go test -race ./...
+
+  build:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Cross-compile
+        run: scripts/build-release.sh "0.0.0-ci+${GITHUB_SHA::7}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tlash-binaries
+          path: dist/*
