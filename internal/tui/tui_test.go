@@ -196,3 +196,35 @@ func TestSideHeightsFavorFocus(t *testing.T) {
 		t.Errorf("roomy heights = %v", hs)
 	}
 }
+
+// Terminals deliver pastes as one PasteMsg (bracketed paste), not as key presses.
+func TestPasteReachesTextFields(t *testing.T) {
+	ep, _ := mihomoapi.ParseEndpoint("127.0.0.1:1")
+	app := New(Options{Client: mihomoapi.New(ep, ""), DelayTest: mihomoapi.DelayTest{URL: "http://x", Timeout: time.Second}})
+	defer app.Close()
+	app.Update(teaWindowSize(120, 30))
+
+	var got []string
+	app.form = newInputForm("添加订阅", func(v []string) tea.Cmd { got = v; return nil }).
+		addText("订阅链接", "", "", "").addText("名称", "", "", "")
+	app.Update(tea.PasteMsg{Content: "https://sub.example.com/api?token=abc"})
+	press(app, "tab")
+	app.Update(tea.PasteMsg{Content: "机场A"})
+	press(app, "enter")
+	if len(got) != 2 || got[0] != "https://sub.example.com/api?token=abc" || got[1] != "机场A" {
+		t.Fatalf("form values = %q", got)
+	}
+
+	// The side-list filter and the logs filter take pastes too.
+	app.broadcast(proxiesMsg{proxies: sampleProxies()})
+	press(app, "2", "/")
+	app.Update(tea.PasteMsg{Content: "hk"})
+	if v := app.cur().list().filter.value(); v != "hk" {
+		t.Fatalf("list filter = %q", v)
+	}
+	press(app, "enter", "1", "]", "enter", "/")
+	app.Update(tea.PasteMsg{Content: "dial"})
+	if v := app.status.logs.filter.value(); v != "dial" {
+		t.Fatalf("logs filter = %q", v)
+	}
+}

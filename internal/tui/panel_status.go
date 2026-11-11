@@ -79,6 +79,8 @@ func (p *statusPanel) interactive(tab int) bool { return tab == statusTabLogs }
 
 func (p *statusPanel) capturing() bool { return p.logs.capturing() }
 
+func (p *statusPanel) paste(msg tea.PasteMsg) tea.Cmd { return p.logs.paste(msg) }
+
 func (p *statusPanel) mainKey(tab int, msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	if tab == statusTabLogs {
 		return p.logs.key(msg)

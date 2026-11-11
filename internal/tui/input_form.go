@@ -99,6 +99,17 @@ func (f *inputForm) update(msg tea.KeyPressMsg) (cmd tea.Cmd, done bool) {
 	return cmd, false
 }
 
+// paste inserts pasted text into the focused text field.
+func (f *inputForm) paste(msg tea.PasteMsg) tea.Cmd {
+	cur := &f.fields[f.focus]
+	if cur.toggle {
+		return nil
+	}
+	var cmd tea.Cmd
+	cur.input, cmd = cur.input.Update(msg)
+	return cmd
+}
+
 func (f *inputForm) view(w int) string {
 	labelW := 0
 	for _, fl := range f.fields {

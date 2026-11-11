@@ -41,6 +41,12 @@ func (f *filterInput) update(msg tea.KeyPressMsg) tea.Cmd {
 	return cmd
 }
 
+func (f *filterInput) paste(msg tea.PasteMsg) tea.Cmd {
+	var cmd tea.Cmd
+	f.input, cmd = f.input.Update(msg)
+	return cmd
+}
+
 func (f *filterInput) value() string { return f.input.Value() }
 func (f *filterInput) clear()        { f.input.SetValue("") }
 

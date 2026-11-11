@@ -26,6 +26,9 @@ type hint struct{ key, desc string }
 // capturer is implemented by panels whose main tab can hold a text field.
 type capturer interface{ capturing() bool }
 
+// paster receives bracketed-paste text for a text field inside the main panel.
+type paster interface{ paste(tea.PasteMsg) tea.Cmd }
+
 type notification struct {
 	text    string
 	isErr   bool
@@ -174,6 +177,8 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 		return nil
 	case tea.KeyPressMsg:
 		return a.handleKey(msg)
+	case tea.PasteMsg:
+		return a.handlePaste(msg)
 	case tea.MouseClickMsg:
 		return a.handleClick(msg.Mouse())
 	case tea.MouseWheelMsg:
@@ -288,6 +293,26 @@ func (a *App) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 		return a.handleMainKey(msg)
 	}
 	return a.handleSideKey(msg)
+}
+
+// handlePaste delivers pasted text to whichever text field is open; terminals send
+// pastes as one message (bracketed paste), not as key presses.
+func (a *App) handlePaste(msg tea.PasteMsg) tea.Cmd {
+	if a.form != nil {
+		return a.form.paste(msg)
+	}
+	if a.popupOpen() {
+		return nil
+	}
+	p := a.cur()
+	if ls := p.list(); ls.filter.active {
+		ls.cursor = 0
+		return ls.filter.paste(msg)
+	}
+	if ps, ok := p.(paster); ok && a.inMain {
+		return ps.paste(msg)
+	}
+	return nil
 }
 
 func (a *App) handleSideKey(msg tea.KeyPressMsg) tea.Cmd {

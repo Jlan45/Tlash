@@ -56,6 +56,15 @@ func (p *logView) actions() []action {
 
 func (p *logView) capturing() bool { return p.filter.active }
 
+// paster is implemented by panels whose main tab can receive pasted text.
+func (p *logView) paste(msg tea.PasteMsg) tea.Cmd {
+	if !p.filter.active {
+		return nil
+	}
+	p.scroll = 0
+	return p.filter.paste(msg)
+}
+
 func (p *logView) togglePause() {
 	p.paused = !p.paused
 	if !p.paused {
