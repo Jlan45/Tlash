@@ -1,6 +1,9 @@
 package tui
 
-import "charm.land/lipgloss/v2"
+import (
+	"charm.land/bubbles/v2/textinput"
+	"charm.land/lipgloss/v2"
+)
 
 // Basic ANSI colors follow the user's terminal palette, so they read on light and dark themes.
 var (
@@ -34,4 +37,16 @@ func delayStyle(delay int) lipgloss.Style {
 	default:
 		return styleBad
 	}
+}
+
+// newTextInput disables cursor blink: blink ticks would need routing back to each input
+// and only cost timers over SSH.
+func newTextInput(prompt, placeholder string) textinput.Model {
+	ti := textinput.New()
+	ti.Prompt = prompt
+	ti.Placeholder = placeholder
+	st := ti.Styles()
+	st.Cursor.Blink = false
+	ti.SetStyles(st)
+	return ti
 }

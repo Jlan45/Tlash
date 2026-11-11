@@ -201,3 +201,10 @@ func (c *Client) Connections(ctx context.Context) (ConnectionsSnapshot, error) {
 func (c *Client) CloseAllConnections(ctx context.Context) error {
 	return c.call(ctx, defaultTimeout, http.MethodDelete, "/connections", nil, nil, nil)
 }
+
+// ReloadConfig makes the core re-read a config file (which must live in its home dir).
+func (c *Client) ReloadConfig(ctx context.Context, path string) error {
+	q := url.Values{}
+	q.Set("force", "true")
+	return c.call(ctx, 30*time.Second, http.MethodPut, "/configs", q, map[string]string{"path": path, "payload": ""}, nil)
+}

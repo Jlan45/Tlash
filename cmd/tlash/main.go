@@ -14,15 +14,11 @@ import (
 	"github.com/Jlan45/Tlash/internal/buildinfo"
 	"github.com/Jlan45/Tlash/internal/mihomoapi"
 	"github.com/Jlan45/Tlash/internal/tui"
+	"github.com/Jlan45/Tlash/internal/workspace"
 )
 
-// Probed in order when --controller and TLASH_CONTROLLER are both unset.
-var defaultControllers = []string{
-	"/etc/tlash/runtime/mihomo.sock",
-	"127.0.0.1:9090",
-}
-
 type rootFlags struct {
+	dir         string
 	controller  string
 	secret      string
 	testURL     string
@@ -46,8 +42,9 @@ func newRootCmd() *cobra.Command {
 		RunE:         func(cmd *cobra.Command, _ []string) error { return runTUI(cmd.Context(), f) },
 	}
 	fl := cmd.PersistentFlags()
+	fl.StringVar(&f.dir, "dir", envOr("TLASH_DIR", workspace.DefaultDir()), "Tlash 数据目录（环境变量 TLASH_DIR）")
 	fl.StringVar(&f.controller, "controller", os.Getenv("TLASH_CONTROLLER"),
-		"mihomo 控制接口：unix socket 路径、unix:///path、host:port 或 http://host:port（环境变量 TLASH_CONTROLLER）")
+		"连接一个不由 Tlash 管理的 mihomo：unix socket 路径、unix:///path、host:port 或 http://host:port（环境变量 TLASH_CONTROLLER）")
 	fl.StringVar(&f.secret, "secret", os.Getenv("TLASH_SECRET"), "控制接口 secret（环境变量 TLASH_SECRET）")
 	cmd.Flags().StringVar(&f.testURL, "test-url", "https://www.gstatic.com/generate_204", "测速地址（代理组自带 url 时优先使用组的）")
 	cmd.Flags().DurationVar(&f.testTimeout, "test-timeout", 5*time.Second, "测速超时")
@@ -65,39 +62,35 @@ func newRootCmd() *cobra.Command {
 	return cmd
 }
 
-func runTUI(ctx context.Context, f *rootFlags) error {
-	ep, err := resolveController(ctx, f)
-	if err != nil {
-		return err
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
 	}
-	app := tui.New(tui.Options{
-		Client:    mihomoapi.New(ep, f.secret),
-		DelayTest: mihomoapi.DelayTest{URL: f.testURL, Timeout: f.testTimeout},
-		LogLevel:  f.logLevel,
-	})
-	defer app.Close()
-	_, err = tea.NewProgram(app, tea.WithContext(ctx)).Run()
-	return err
+	return fallback
 }
 
-// resolveController uses the explicit address, else the first default that answers.
-func resolveController(ctx context.Context, f *rootFlags) (mihomoapi.Endpoint, error) {
+func runTUI(ctx context.Context, f *rootFlags) error {
+	opts := tui.Options{
+		DelayTest: mihomoapi.DelayTest{URL: f.testURL, Timeout: f.testTimeout},
+		LogLevel:  f.logLevel,
+	}
 	if f.controller != "" {
-		return mihomoapi.ParseEndpoint(f.controller)
-	}
-	for _, addr := range defaultControllers {
-		ep, err := mihomoapi.ParseEndpoint(addr)
+		// External core: monitoring and switching only; Tlash doesn't own its config or process.
+		ep, err := mihomoapi.ParseEndpoint(f.controller)
 		if err != nil {
-			continue
+			return err
 		}
-		probeCtx, cancel := context.WithTimeout(ctx, time.Second)
-		_, err = mihomoapi.New(ep, f.secret).Version(probeCtx)
-		cancel()
-		// A secret rejection still proves the controller is there.
-		if err == nil || mihomoapi.IsUnauthorized(err) {
-			return ep, nil
+		opts.Client = mihomoapi.New(ep, f.secret)
+	} else {
+		ws, err := workspace.Open(f.dir)
+		if err != nil {
+			return fmt.Errorf("打开数据目录 %s 失败: %w", f.dir, err)
 		}
+		opts.Workspace = ws
+		opts.Client = ws.Client()
 	}
-	// Nothing answered: open the UI on the last default so it keeps retrying.
-	return mihomoapi.ParseEndpoint(defaultControllers[len(defaultControllers)-1])
+	app := tui.New(opts)
+	defer app.Close()
+	_, err := tea.NewProgram(app, tea.WithContext(ctx)).Run()
+	return err
 }

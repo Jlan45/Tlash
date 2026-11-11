@@ -50,9 +50,7 @@ type proxiesPage struct {
 }
 
 func newProxiesPage(sess *session) *proxiesPage {
-	ti := textinput.New()
-	ti.Prompt = "/ "
-	ti.Placeholder = "过滤节点名"
+	ti := newTextInput("/ ", "过滤节点名")
 	return &proxiesPage{sess: sess, collapsed: map[string]bool{}, testing: map[string]bool{}, filter: ti}
 }
 

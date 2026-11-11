@@ -37,9 +37,7 @@ type logsPage struct {
 }
 
 func newLogsPage(sess *session, streams *coreStreams, level string) *logsPage {
-	ti := textinput.New()
-	ti.Prompt = "/ "
-	ti.Placeholder = "过滤日志"
+	ti := newTextInput("/ ", "过滤日志")
 	return &logsPage{sess: sess, streams: streams, level: level, buf: newLogBuffer(logBufferLimit), filter: ti}
 }
 

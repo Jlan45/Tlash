@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +24,8 @@ func key(s string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: tea.KeyDown}
 	case "esc":
 		return tea.KeyPressMsg{Code: tea.KeyEscape}
+	case "tab":
+		return tea.KeyPressMsg{Code: tea.KeyTab}
 	}
 	r := []rune(s)[0]
 	return tea.KeyPressMsg{Code: r, Text: s}
@@ -38,8 +42,14 @@ func run(app *App, cmd tea.Cmd) {
 	var msg tea.Msg
 	select {
 	case msg = <-done:
-	case <-time.After(1500 * time.Millisecond):
+	case <-time.After(30 * time.Second):
+		if os.Getenv("TLASH_DEBUG_RUN") != "" {
+			fmt.Printf("run: cmd timed out\n")
+		}
 		return
+	}
+	if os.Getenv("TLASH_DEBUG_RUN") != "" {
+		fmt.Printf("run: %T\n", msg)
 	}
 	switch m := msg.(type) {
 	case nil:
@@ -47,13 +57,19 @@ func run(app *App, cmd tea.Cmd) {
 		for _, c := range m {
 			run(app, c)
 		}
-	case streamEventMsg, statusTickMsg, notifyExpireMsg:
+	case streamEventMsg, statusTickMsg, notifyExpireMsg, animTickMsg:
 		// Feed the event but don't re-arm the loop.
 		app.Update(m)
 	default:
 		_, next := app.Update(m)
 		run(app, next)
 	}
+}
+
+// Ticks fire immediately in tests; run() feeds them once without re-arming.
+func init() {
+	notifyDuration = time.Millisecond
+	statusPollInterval = time.Millisecond
 }
 
 func press(app *App, keys ...string) {

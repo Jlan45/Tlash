@@ -7,17 +7,22 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/Jlan45/Tlash/internal/mihomoapi"
+	"github.com/Jlan45/Tlash/internal/workspace"
 )
 
-const (
-	statusPollInterval = 2 * time.Second
-	trafficHistoryLen  = 240
-)
+const trafficHistoryLen = 240
+
+var statusPollInterval = 2 * time.Second
 
 // session is the core state every page reads; only the app model mutates it.
 type session struct {
 	client    *mihomoapi.Client
 	delayTest mihomoapi.DelayTest
+	// ws is nil when attached to an external core via --controller.
+	ws   *workspace.Workspace
+	core coreState
+	// busy maps a job key to its status-bar text while it runs.
+	busy map[string]string
 
 	connected bool
 	lastErr   error
@@ -89,13 +94,14 @@ func notifyErr(prefix string, err error) tea.Cmd {
 	return func() tea.Msg { return notifyMsg{text: prefix + ": " + err.Error(), isErr: true} }
 }
 
-// confirmMsg asks the user to confirm before running onYes.
+// confirmMsg asks the user to confirm. onYes runs in Update (so it may touch session state)
+// only after confirmation.
 type confirmMsg struct {
 	prompt string
-	onYes  tea.Cmd
+	onYes  func() tea.Cmd
 }
 
-func askConfirm(prompt string, onYes tea.Cmd) tea.Cmd {
+func askConfirm(prompt string, onYes func() tea.Cmd) tea.Cmd {
 	return func() tea.Msg { return confirmMsg{prompt: prompt, onYes: onYes} }
 }
 

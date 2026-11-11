@@ -3,6 +3,7 @@ package tui
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -11,9 +12,11 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/Jlan45/Tlash/internal/mihomoapi"
+	"github.com/Jlan45/Tlash/internal/workspace"
 )
 
-const notifyDuration = 4 * time.Second
+// Vars so tests can shorten them.
+var notifyDuration = 4 * time.Second
 
 type hint struct{ key, desc string }
 
@@ -40,13 +43,23 @@ type Options struct {
 	Client    *mihomoapi.Client
 	DelayTest mihomoapi.DelayTest
 	LogLevel  string
+	// Workspace enables core, profile and service management; nil attaches to an external core.
+	Workspace *workspace.Workspace
 }
+
+type animTickMsg struct{}
+
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 type App struct {
 	sess    *session
 	streams *coreStreams
 	pages   []page
+	logs    *logsPage
 	active  int
+
+	animating bool
+	frame     int
 
 	width, height int
 	showHelp      bool
@@ -55,74 +68,101 @@ type App struct {
 }
 
 func New(opts Options) *App {
-	sess := &session{client: opts.Client, delayTest: opts.DelayTest}
+	sess := &session{client: opts.Client, delayTest: opts.DelayTest, ws: opts.Workspace, busy: map[string]string{}}
 	streams := newCoreStreams(opts.Client)
 	logLevel := opts.LogLevel
 	if logLevel == "" {
 		logLevel = "info"
 	}
-	return &App{
-		sess:    sess,
-		streams: streams,
-		pages: []page{
-			newOverviewPage(sess),
-			newProxiesPage(sess),
-			newLogsPage(sess, streams, logLevel),
-		},
+	a := &App{sess: sess, streams: streams, logs: newLogsPage(sess, streams, logLevel)}
+	a.pages = []page{newOverviewPage(sess), newProxiesPage(sess)}
+	if sess.ws != nil {
+		a.pages = append(a.pages, newProfilesPage(sess))
 	}
+	a.pages = append(a.pages, a.logs)
+	if sess.ws != nil {
+		a.pages = append(a.pages, newCorePage(sess))
+	}
+	return a
 }
 
 func (a *App) Init() tea.Cmd {
-	a.streams.start(a.pages[2].(*logsPage).level)
-	return tea.Batch(fetchStatus(a.sess.client), statusTick(), a.streams.next(), a.pages[a.active].activate())
+	a.streams.start(a.logs.level)
+	return tea.Batch(a.sess.refreshAll(), statusTick(), a.streams.next(), a.pages[a.active].activate())
 }
 
 // Close stops background streams; call after the program exits.
 func (a *App) Close() { a.streams.stop() }
 
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	cmd := a.update(msg)
+	// Animate the status-bar spinner while background jobs run.
+	if len(a.sess.busy) > 0 && !a.animating {
+		a.animating = true
+		cmd = tea.Batch(cmd, animTick())
+	}
+	return a, cmd
+}
+
+func animTick() tea.Cmd {
+	return tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg { return animTickMsg{} })
+}
+
+func (a *App) update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
+	case animTickMsg:
+		a.frame++
+		if len(a.sess.busy) == 0 {
+			a.animating = false
+			return nil
+		}
+		return animTick()
+
 	case tea.WindowSizeMsg:
 		a.width, a.height = msg.Width, msg.Height
-		return a, nil
+		return nil
 
 	case streamEventMsg:
-		return a, tea.Batch(a.broadcast(msg.inner), a.streams.next())
+		return tea.Batch(a.broadcast(msg.inner), a.streams.next())
 
 	case statusTickMsg:
-		return a, tea.Batch(fetchStatus(a.sess.client), statusTick(), a.pages[a.active].update(msg))
+		cmds := []tea.Cmd{fetchStatus(a.sess.client), statusTick(), a.pages[a.active].update(msg)}
+		if a.sess.ws != nil {
+			cmds = append(cmds, fetchCoreState(a.sess.ws, false))
+		}
+		return tea.Batch(cmds...)
 
 	case notifyMsg:
 		a.note = &notification{text: msg.text, isErr: msg.isErr, expires: time.Now().Add(notifyDuration)}
-		return a, tea.Tick(notifyDuration, func(time.Time) tea.Msg { return notifyExpireMsg{} })
+		return tea.Tick(notifyDuration, func(time.Time) tea.Msg { return notifyExpireMsg{} })
 
 	case notifyExpireMsg:
 		if a.note != nil && time.Now().After(a.note.expires.Add(-50*time.Millisecond)) {
 			a.note = nil
 		}
-		return a, nil
+		return nil
 
 	case confirmMsg:
 		a.confirm = &msg
-		return a, nil
+		return nil
 
 	case tea.KeyPressMsg:
-		return a, a.handleKey(msg)
+		return a.handleKey(msg)
 
 	case tea.MouseClickMsg:
-		return a, a.handleClick(msg.Mouse())
+		return a.handleClick(msg.Mouse())
 
 	case tea.MouseWheelMsg:
 		if a.confirm != nil {
-			return a, nil
+			return nil
 		}
 		key := tea.KeyPressMsg{Code: tea.KeyDown}
 		if msg.Button == tea.MouseWheelUp {
 			key = tea.KeyPressMsg{Code: tea.KeyUp}
 		}
-		return a, a.pages[a.active].update(key)
+		return a.pages[a.active].update(key)
 	}
-	return a, a.broadcast(msg)
+	return a.broadcast(msg)
 }
 
 func (a *App) broadcast(msg tea.Msg) tea.Cmd {
@@ -131,6 +171,10 @@ func (a *App) broadcast(msg tea.Msg) tea.Cmd {
 		a.sess.recordTraffic(mihomoapi.Traffic(msg))
 	case memoryMsg:
 		a.sess.memory = msg.InUse
+	case coreStateMsg:
+		a.sess.applyCoreState(msg)
+	case jobDoneMsg:
+		delete(a.sess.busy, msg.key)
 	case statusMsg:
 		a.sess.lastErr = msg.err
 		a.sess.connected = msg.err == nil
@@ -155,7 +199,7 @@ func (a *App) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 		switch key {
 		case "y", "Y", "enter":
 			a.confirm = nil
-			return c.onYes
+			return c.onYes()
 		case "n", "N", "esc", "q":
 			a.confirm = nil
 		}
@@ -277,14 +321,20 @@ func (a *App) renderSidebar(w, h int) string {
 func (a *App) renderStatusBar() string {
 	s := a.sess
 	var left string
-	if s.connected {
-		left = styleOK.Render("● 已连接") + " " + s.version.Version +
+	switch {
+	case s.connected:
+		left = styleOK.Render("● 运行中") + " " + s.version.Version +
 			styleDim.Render(" │ ") + modeLabel(s.config.Mode) +
 			styleDim.Render(" │ ") + "内存 " + formatBytes(s.memory) +
 			styleDim.Render(" │ ") + fmt.Sprintf("连接 %d", s.connCount) +
 			styleDim.Render(" │ ") + "↑" + formatSpeed(s.traffic.Up) + " ↓" + formatSpeed(s.traffic.Down)
-	} else {
+	case s.ws != nil && s.core.known && !s.core.running:
+		left = styleDim.Render("● 已停止")
+	default:
 		left = styleBad.Render("● 未连接")
+	}
+	if len(s.busy) > 0 {
+		left += styleDim.Render(" │ ") + styleWarn.Render(spinnerFrames[a.frame%len(spinnerFrames)]+" "+busySummary(s.busy))
 	}
 
 	var right string
@@ -355,6 +405,15 @@ func shortHints(hs []hint, n int) []hint {
 		return hs[:n]
 	}
 	return hs
+}
+
+func busySummary(busy map[string]string) string {
+	texts := make([]string, 0, len(busy))
+	for _, t := range busy {
+		texts = append(texts, t)
+	}
+	slices.Sort(texts)
+	return strings.Join(texts, "、") + "…"
 }
 
 func modeLabel(mode string) string {

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +10,8 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/Jlan45/Tlash/internal/mihomoapi"
+	"github.com/Jlan45/Tlash/internal/profile"
+	"github.com/Jlan45/Tlash/internal/workspace"
 )
 
 func TestFormatBytes(t *testing.T) {
@@ -126,5 +129,46 @@ func TestRenderSizes(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// Workspace pages (profiles, core, setup checklist) also fit every size.
+func TestRenderSizesWithWorkspace(t *testing.T) {
+	dir, err := os.MkdirTemp("", "tlr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	ws, err := workspace.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := New(Options{Client: ws.Client(), Workspace: ws, DelayTest: mihomoapi.DelayTest{URL: "http://x", Timeout: time.Second}})
+	defer app.Close()
+	app.sess.core = coreState{known: true, installed: true, version: "v1.19.34", kind: "systemd"}
+	pp := app.pages[2].(*profilesPage)
+	pp.update(profilesMsg{profiles: []profile.Profile{{
+		ID: "a", Name: "一个名字非常非常非常非常长的机场订阅", Kind: profile.KindRemote, URL: "https://sub.example.com/x?token=1",
+		Usage: &profile.Usage{Upload: 1 << 30, Download: 5 << 30, Total: 100 << 30, Expire: time.Now().Add(72 * time.Hour)},
+	}}})
+	for _, size := range [][2]int{{40, 10}, {80, 24}, {160, 50}} {
+		app.Update(teaWindowSize(size[0], size[1]))
+		for i := range app.pages {
+			app.active = i
+			for _, l := range strings.Split(app.render(), "\n") {
+				if w := ansi.StringWidth(l); w > size[0] {
+					t.Errorf("%dx%d page %s: width %d: %q", size[0], size[1], app.pages[i].title(), w, ansi.Strip(l))
+				}
+			}
+		}
+		// A form open on the profiles page must fit too.
+		app.active = 2
+		pp.form = pp.addRemoteForm()
+		for _, l := range strings.Split(app.render(), "\n") {
+			if w := ansi.StringWidth(l); w > size[0] {
+				t.Errorf("%dx%d form: width %d", size[0], size[1], w)
+			}
+		}
+		pp.form = nil
 	}
 }

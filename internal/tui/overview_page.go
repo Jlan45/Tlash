@@ -19,18 +19,36 @@ func (p *overviewPage) activate() tea.Cmd    { return nil }
 func (p *overviewPage) capturingInput() bool { return false }
 
 func (p *overviewPage) hints() []hint {
-	return []hint{
+	var hs []hint
+	if p.sess.ws != nil {
+		hs = append(hs, hint{"s", "启动 / 停止内核"})
+	}
+	return append(hs, []hint{
 		{"r", "规则模式"},
 		{"g", "全局模式"},
 		{"d", "直连模式"},
 		{"R", "重启内核"},
 		{"X", "关闭所有连接"},
-	}
+	}...)
 }
 
 func (p *overviewPage) update(msg tea.Msg) tea.Cmd {
 	key, ok := msg.(tea.KeyPressMsg)
-	if !ok || !p.sess.connected {
+	if !ok {
+		return nil
+	}
+	if ws := p.sess.ws; ws != nil {
+		switch key.String() {
+		case "s":
+			return toggleCore(p.sess)
+		case "R":
+			return askConfirm("重启 mihomo 内核？\n现有连接会全部断开。", func() tea.Cmd {
+				return p.sess.job("core-service", "重启内核",
+					func(ctx context.Context) (string, error) { return "内核已重启", ws.Restart(ctx) }, p.sess.refreshAll())
+			})
+		}
+	}
+	if !p.sess.connected {
 		return nil
 	}
 	c := p.sess.client
@@ -44,11 +62,15 @@ func (p *overviewPage) update(msg tea.Msg) tea.Cmd {
 		return apiCall("切换模式失败", "已切换到"+modeLabel(mode)+"模式",
 			func(ctx context.Context) error { return c.SetMode(ctx, mode) }, refresh)
 	case "R":
-		return askConfirm("重启 mihomo 内核？\n现有连接会全部断开。", apiCall("重启失败", "内核正在重启",
-			func(ctx context.Context) error { return c.Restart(ctx) }, refresh))
+		return askConfirm("重启 mihomo 内核？\n现有连接会全部断开。", func() tea.Cmd {
+			return apiCall("重启失败", "内核正在重启",
+				func(ctx context.Context) error { return c.Restart(ctx) }, refresh)
+		})
 	case "X":
-		return askConfirm(fmt.Sprintf("关闭全部 %d 个连接？", p.sess.connCount), apiCall("关闭连接失败", "已关闭所有连接",
-			func(ctx context.Context) error { return c.CloseAllConnections(ctx) }, refresh))
+		return askConfirm(fmt.Sprintf("关闭全部 %d 个连接？", p.sess.connCount), func() tea.Cmd {
+			return apiCall("关闭连接失败", "已关闭所有连接",
+				func(ctx context.Context) error { return c.CloseAllConnections(ctx) }, refresh)
+		})
 	}
 	return nil
 }
@@ -61,6 +83,9 @@ func (p *overviewPage) view(w, h int) string {
 	}
 
 	b.WriteString(styleTitle.Render("概览") + "\n\n")
+	if s.ws != nil && s.core.known && !s.connected {
+		return p.viewStopped(&b, row)
+	}
 	if !s.connected {
 		row("内核", styleBad.Render("● 未连接"))
 		row("控制接口", s.client.Endpoint().String())
@@ -78,7 +103,12 @@ func (p *overviewPage) view(w, h int) string {
 	}
 
 	row("内核", styleOK.Render("● 运行中")+"  "+versionLabel(s.version))
-	row("控制接口", s.client.Endpoint().String())
+	if s.ws != nil {
+		row("订阅", activeProfileLabel(s))
+		row("托管", fmt.Sprintf("%s · 开机自启 %s", s.core.kind.Label(), onOff(s.core.autoStart)))
+	} else {
+		row("控制接口", s.client.Endpoint().String())
+	}
 	row("出站模式", modeSwitcher(s.config.Mode)+styleDim.Render("    r / g / d 切换"))
 	row("端口", portSummary(s.config))
 	row("网络", fmt.Sprintf("局域网访问 %s · IPv6 %s · TUN %s · 日志 %s",
@@ -155,4 +185,67 @@ func peak(samples []int64, window int) int64 {
 		m = max(m, s)
 	}
 	return m
+}
+
+// viewStopped is the workspace view while the core isn't reachable: a setup checklist.
+func (p *overviewPage) viewStopped(b *strings.Builder, row func(string, string)) string {
+	s := p.sess
+	state := styleDim.Render("● 已停止")
+	if s.core.running {
+		state = styleWarn.Render("● 服务运行中，但控制接口无响应")
+	}
+	row("内核", state)
+	row("托管", s.core.kind.Label())
+	row("数据目录", s.ws.Dir)
+	if s.core.running && s.lastErr != nil {
+		row("错误", styleBad.Render(s.lastErr.Error()))
+		row("内核日志", s.core.logHint)
+	}
+	b.WriteString("\n" + styleTitle.Render("开始使用") + "\n\n")
+	step := func(done bool, text, how string) {
+		mark := styleDim.Render("○")
+		if done {
+			mark = styleOK.Render("✓")
+		}
+		b.WriteString("  " + mark + " " + padRight(text, 14) + styleDim.Render(how) + "\n")
+	}
+	_, hasProfile := activeProfile(s)
+	step(s.core.installed, "安装内核", "内核页按 D 下载，或按 i 导入本地文件")
+	step(hasProfile, "添加订阅", "订阅页按 a 添加订阅链接，或按 i 导入本地配置")
+	step(s.core.running, "启动内核", "在这里按 s 启动（没有订阅时以直连模式运行）")
+	return b.String()
+}
+
+func toggleCore(sess *session) tea.Cmd {
+	ws := sess.ws
+	if sess.core.running {
+		return askConfirm("停止 mihomo 内核？\n代理将不可用，直到再次启动。", func() tea.Cmd {
+			return sess.job("core-service", "停止内核",
+				func(ctx context.Context) (string, error) { return "内核已停止", ws.Stop(ctx) }, sess.refreshAll())
+		})
+	}
+	if !sess.core.installed {
+		return notify("尚未安装内核，请先在内核页按 D 下载")
+	}
+	return sess.job("core-service", "启动内核",
+		func(ctx context.Context) (string, error) { return "内核已启动", ws.Start(ctx) }, sess.refreshAll())
+}
+
+func activeProfile(s *session) (string, bool) {
+	id := s.ws.Settings().ActiveProfile
+	if id == "" {
+		return "", false
+	}
+	p, err := s.ws.Profiles.Get(id)
+	if err != nil {
+		return "", false
+	}
+	return p.Name, true
+}
+
+func activeProfileLabel(s *session) string {
+	if name, ok := activeProfile(s); ok {
+		return name
+	}
+	return styleDim.Render("未选择（直连模式运行）")
 }
