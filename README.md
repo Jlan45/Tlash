@@ -17,9 +17,21 @@
 - **内核**：从 GitHub 下载（稳定版 / Alpha，可设置下载镜像，sha256 校验），回滚，导入本地文件；systemd / OpenRC / procd / 后台进程托管与开机自启；接管端口、局域网访问、日志级别等设置
 - 支持鼠标（点击侧栏切页，滚轮滚动）；按 `?` 查看当前页快捷键；退出 Tlash 不影响内核运行
 
+## 安装
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Jlan45/Tlash/main/scripts/install.sh | sh
+```
+
+- 国内服务器经镜像下载：`curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/Jlan45/Tlash/main/scripts/install.sh | mirror=https://ghfast.top/ sh`
+- 指定版本：`... | version=v0.1.0-alpha.1 sh`
+- 卸载（保留数据）：`... | sh -s uninstall`；连数据一起删除：`... | sh -s purge`
+
+root 安装到 `/usr/local/bin/tlash`，数据在 `/etc/tlash`；普通用户安装到 `~/.local/bin/tlash`，数据在 `~/.local/share/tlash`。也可以从 [Releases](https://github.com/Jlan45/Tlash/releases) 手动下载（linux amd64 / arm64 / armv7 / 386）。
+
 ## 使用
 
-从 [Releases](https://github.com/Jlan45/Tlash/releases) 下载对应架构的压缩包（linux amd64 / arm64 / armv7 / 386），解压后运行 `tlash`，按概览页的引导：
+运行 `tlash`，按概览页的引导：
 
 1. 内核页按 `D` 下载内核（国内服务器可先按 `M` 设置下载镜像，或按 `i` 导入本地文件）
 2. 订阅页按 `a` 添加订阅链接
