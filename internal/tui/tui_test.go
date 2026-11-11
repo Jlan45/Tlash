@@ -228,3 +228,42 @@ func TestPasteReachesTextFields(t *testing.T) {
 		t.Fatalf("logs filter = %q", v)
 	}
 }
+
+// Arrowing past a panel's ends moves into the neighbouring panel.
+func TestSideCursorCrossesPanels(t *testing.T) {
+	ep, _ := mihomoapi.ParseEndpoint("127.0.0.1:1")
+	app := New(Options{Client: mihomoapi.New(ep, ""), DelayTest: mihomoapi.DelayTest{URL: "http://x", Timeout: time.Second}})
+	defer app.Close()
+	app.Update(teaWindowSize(120, 30))
+	app.broadcast(proxiesMsg{proxies: sampleProxies()}) // 2 visible groups
+	title := func() string { return app.cur().title() }
+
+	press(app, "down") // status is one item: straight into 代理组
+	if title() != "代理组" || app.cur().list().cursor != 0 {
+		t.Fatalf("after down from status: %s cursor %d", title(), app.cur().list().cursor)
+	}
+	press(app, "down")
+	if title() != "代理组" || app.cur().list().cursor != 1 {
+		t.Fatalf("second down should stay in groups: %s cursor %d", title(), app.cur().list().cursor)
+	}
+	press(app, "down") // past the last group
+	if title() != "连接" {
+		t.Fatalf("down past last group: %s", title())
+	}
+	press(app, "up") // empty list: back up to the groups' last row
+	if title() != "代理组" || app.cur().list().cursor != 1 {
+		t.Fatalf("up into groups: %s cursor %d", title(), app.cur().list().cursor)
+	}
+	press(app, "k", "k")
+	if title() != "状态" {
+		t.Fatalf("up past first group: %s", title())
+	}
+	press(app, "up") // top panel: stays put
+	if title() != "状态" {
+		t.Fatalf("up at top moved to %s", title())
+	}
+	press(app, "5", "j") // bottom panel (设置, external mode has one category): stays put
+	if title() != "设置" {
+		t.Fatalf("down at bottom moved to %s", title())
+	}
+}

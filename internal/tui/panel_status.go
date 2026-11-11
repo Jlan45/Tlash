@@ -31,6 +31,7 @@ func newStatusPanel(sess *session, logs *logView) *statusPanel {
 }
 
 func (p *statusPanel) title() string { return "状态" }
+func (p *statusPanel) summary() bool { return true }
 
 func (p *statusPanel) tabs() []string {
 	if p.sess.ws == nil {

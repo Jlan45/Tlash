@@ -26,6 +26,14 @@ type hint struct{ key, desc string }
 // capturer is implemented by panels whose main tab can hold a text field.
 type capturer interface{ capturing() bool }
 
+// summary panels show one item spread over several lines, so they have no row cursor.
+type summary interface{ summary() bool }
+
+func isSummary(p panel) bool {
+	s, ok := p.(summary)
+	return ok && s.summary()
+}
+
 // paster receives bracketed-paste text for a text field inside the main panel.
 type paster interface{ paste(tea.PasteMsg) tea.Cmd }
 
@@ -325,8 +333,27 @@ func (a *App) handleSideKey(msg tea.KeyPressMsg) tea.Cmd {
 	case "shift+tab", "left", "h":
 		return a.focusPanel((a.focus + len(a.panels) - 1) % len(a.panels))
 	case "up", "k":
+		// Moving past the first row continues into the panel above, at its last row.
+		if ls.cursor <= 0 || isSummary(p) {
+			if a.focus > 0 {
+				cmd := a.focusPanel(a.focus - 1)
+				prev := a.cur()
+				prev.list().cursor = max(len(prev.rows(a.sideW))-1, 0)
+				return cmd
+			}
+			return nil
+		}
 		ls.move(-1, n)
 	case "down", "j":
+		// Moving past the last row continues into the panel below, at its first row.
+		if ls.cursor >= n-1 || isSummary(p) {
+			if a.focus < len(a.panels)-1 {
+				cmd := a.focusPanel(a.focus + 1)
+				a.cur().list().cursor = 0
+				return cmd
+			}
+			return nil
+		}
 		ls.move(1, n)
 	case "pgup", "ctrl+u":
 		ls.move(-10, n)
@@ -591,7 +618,7 @@ func (a *App) renderSide(w, h int, onlyFocused bool) string {
 		}
 		for r := start; r < end; r++ {
 			line := rows[r]
-			if r == ls.cursor && i == a.focus {
+			if r == ls.cursor && i == a.focus && !isSummary(p) {
 				if focused {
 					line = styleSelected.Render(padRight(ansi.Strip(line), w-2))
 				} else {
