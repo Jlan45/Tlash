@@ -2,14 +2,18 @@ package workspace
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Jlan45/Tlash/internal/appsettings"
+	"github.com/Jlan45/Tlash/internal/portowner"
 	"github.com/Jlan45/Tlash/internal/profile"
 )
 
@@ -201,5 +205,50 @@ func TestStartReportsBusyPort(t *testing.T) {
 	err = w.UpdateManaged(context.Background(), func(m *appsettings.Managed) { m.MixedPort = &busy })
 	if err == nil || !strings.Contains(err.Error(), "未能监听") {
 		t.Fatalf("want listen failure after reload, got %v", err)
+	}
+}
+
+// A core left over from this data dir (outside the current supervisor) is recognised and can be cleared.
+func TestStartRecognisesStaleCore(t *testing.T) {
+	w := openTestWorkspace(t, "process")
+	ctx := context.Background()
+	if err := w.Apply(ctx); err != nil {
+		t.Fatal(err)
+	}
+	orphan := exec.Command(w.Core.Current, "-d", w.RuntimeDir, "-f", w.ConfigPath)
+	if err := orphan.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = orphan.Process.Kill(); _, _ = orphan.Process.Wait() })
+	go func() { _, _ = orphan.Process.Wait() }()
+	port, _ := w.MixedPort()
+	for i := 0; i < 50 && !portowner.Busy(port); i++ {
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	err := w.Start(ctx)
+	var stale *StaleCoreError
+	if !errors.As(err, &stale) || stale.PID != orphan.Process.Pid {
+		t.Fatalf("want StaleCoreError for pid %d, got %v", orphan.Process.Pid, err)
+	}
+	if err := w.StopStaleCore(stale.PID); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Start(ctx); err != nil {
+		t.Fatalf("start after clearing stale core: %v", err)
+	}
+	defer w.Stop(ctx)
+	// Never touches processes that aren't this workspace's core.
+	if err := w.StopStaleCore(os.Getpid()); err == nil {
+		t.Fatal("StopStaleCore accepted a foreign process")
+	}
+}
+
+func TestOtherTlashDir(t *testing.T) {
+	if got := otherTlashDir("/etc/tlash/core/mihomo -d /etc/tlash/runtime -f /etc/tlash/runtime/config.yaml"); got != "/etc/tlash" {
+		t.Errorf("otherTlashDir = %q", got)
+	}
+	if got := otherTlashDir("/usr/bin/mihomo -d /etc/mihomo"); got != "" {
+		t.Errorf("non-tlash core matched: %q", got)
 	}
 }

@@ -2,6 +2,8 @@ package tui
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -64,7 +66,11 @@ func (s *session) job(key, text string, fn func(ctx context.Context) (okText str
 		okText, err := fn(context.Background())
 		cmds := []tea.Cmd{func() tea.Msg { return jobDoneMsg{key: key} }}
 		if err != nil {
-			cmds = append(cmds, notifyErr(text+"失败", err))
+			if follow := s.followUp(err); follow != nil {
+				cmds = append(cmds, follow)
+			} else {
+				cmds = append(cmds, notifyErr(text+"失败", err))
+			}
 		} else if okText != "" {
 			cmds = append(cmds, notify(okText))
 		}
@@ -79,4 +85,24 @@ func (s *session) refreshAll() tea.Cmd {
 		cmds = append(cmds, fetchCoreState(s.ws, true))
 	}
 	return tea.Batch(cmds...)
+}
+
+// followUp turns errors the user can fix in one step into a confirm prompt.
+func (s *session) followUp(err error) tea.Cmd {
+	var stale *workspace.StaleCoreError
+	if s.ws == nil || !errors.As(err, &stale) {
+		return nil
+	}
+	ws, pid := s.ws, stale.PID
+	return askConfirm(fmt.Sprintf("端口被本数据目录残留的旧内核占用（pid %d），\n它不受当前托管方式管理。结束它并重新启动内核？", pid), func() tea.Cmd {
+		return s.job("core-service", "清理旧内核并启动", func(ctx context.Context) (string, error) {
+			if err := ws.StopStaleCore(pid); err != nil {
+				return "", err
+			}
+			if running, _ := ws.Service().Running(ctx); running {
+				return "已清理旧内核并重启", ws.Restart(ctx)
+			}
+			return "已清理旧内核并启动", ws.Start(ctx)
+		}, s.refreshAll())
+	})
 }

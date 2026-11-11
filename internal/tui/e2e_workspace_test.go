@@ -4,7 +4,9 @@ import (
 	"context"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -109,4 +111,60 @@ rules:
 	if app.sess.core.running {
 		t.Fatalf("still running:\n%s", screen(app))
 	}
+}
+
+// A leftover core from this data dir is offered for cleanup instead of failing to start.
+func TestStaleCorePromptsCleanup(t *testing.T) {
+	bin := os.Getenv("TLASH_MIHOMO_BIN")
+	if bin == "" {
+		t.Skip("TLASH_MIHOMO_BIN not set")
+	}
+	dir, err := os.MkdirTemp("", "tls")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	ws, err := workspace.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	port := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+	_ = ws.UpdateSettings(func(s *appsettings.Settings) { s.Core.Service = "process"; s.Managed.MixedPort = &port })
+	ctx := context.Background()
+	if _, err := ws.ImportCore(ctx, bin); err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Service().Uninstall(ctx)
+	if err := ws.Apply(ctx); err != nil {
+		t.Fatal(err)
+	}
+	orphan := exec.Command(ws.Core.Current, "-d", ws.RuntimeDir, "-f", ws.ConfigPath)
+	if err := orphan.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = orphan.Process.Kill() }()
+	go func() { _, _ = orphan.Process.Wait() }()
+	for i := 0; i < 50; i++ {
+		if c, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port))); err == nil {
+			c.Close()
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	app := New(Options{Client: ws.Client(), Workspace: ws, DelayTest: mihomoapi.DelayTest{URL: "http://127.0.0.1:1/", Timeout: time.Second}})
+	defer app.Close()
+	app.Update(teaWindowSize(120, 30))
+	run(app, fetchCoreState(ws, true))
+	press(app, "s")
+	if out := screen(app); !strings.Contains(out, "残留的旧内核") || app.confirm == nil {
+		t.Fatalf("no cleanup prompt:\n%s", out)
+	}
+	press(app, "y")
+	if !app.sess.core.running {
+		t.Fatalf("core not running after cleanup:\n%s", screen(app))
+	}
+	_ = ws.Stop(ctx)
 }

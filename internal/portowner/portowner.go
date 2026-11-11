@@ -21,12 +21,39 @@ func Busy(port int) bool {
 	return false
 }
 
-// Describe names the listener on port, e.g. "clash (pid 1234)". Empty when it can't tell
-// (another user's process and we aren't root).
+// Owner is the process listening on a port.
+type Owner struct {
+	PID     int
+	Comm    string
+	Cmdline string // argv joined with spaces
+	Unit    string // systemd unit from the cgroup, if any
+}
+
+func (o Owner) String() string {
+	s := fmt.Sprintf("%s (pid %d)", o.Comm, o.PID)
+	if o.Unit != "" {
+		s += "，systemd 服务 " + o.Unit
+	}
+	if o.Cmdline != "" {
+		s += "，命令 " + o.Cmdline
+	}
+	return s
+}
+
+// Describe names the listener on port. Empty when it can't tell (another user's process and
+// we aren't root).
 func Describe(port int) string {
+	if o, ok := Find(port); ok {
+		return o.String()
+	}
+	return ""
+}
+
+// Find locates the process listening on port via /proc.
+func Find(port int) (Owner, bool) {
 	inodes := listeningInodes(port)
 	if len(inodes) == 0 {
-		return ""
+		return Owner{}, false
 	}
 	procs, _ := filepath.Glob("/proc/[0-9]*")
 	for _, dir := range procs {
@@ -40,8 +67,34 @@ func Describe(port int) string {
 				continue
 			}
 			if inodes[strings.TrimSuffix(strings.TrimPrefix(link, "socket:["), "]")] {
-				comm, _ := os.ReadFile(filepath.Join(dir, "comm"))
-				return fmt.Sprintf("%s (pid %s)", strings.TrimSpace(string(comm)), filepath.Base(dir))
+				return ownerOf(dir), true
+			}
+		}
+	}
+	return Owner{}, false
+}
+
+func ownerOf(dir string) Owner {
+	pid, _ := strconv.Atoi(filepath.Base(dir))
+	comm, _ := os.ReadFile(filepath.Join(dir, "comm"))
+	cmdline, _ := os.ReadFile(filepath.Join(dir, "cmdline"))
+	cgroup, _ := os.ReadFile(filepath.Join(dir, "cgroup"))
+	return Owner{
+		PID:     pid,
+		Comm:    strings.TrimSpace(string(comm)),
+		Cmdline: strings.TrimSpace(strings.ReplaceAll(string(cmdline), "\x00", " ")),
+		Unit:    unitFromCgroup(string(cgroup)),
+	}
+}
+
+// unitFromCgroup takes the innermost *.service from e.g.
+// "0::/user.slice/user-1000.slice/user@1000.service/app.slice/tlash-mihomo.service".
+func unitFromCgroup(cg string) string {
+	for _, line := range strings.Split(cg, "\n") {
+		parts := strings.Split(line, "/")
+		for i := len(parts) - 1; i >= 0; i-- {
+			if strings.HasSuffix(parts[i], ".service") && !strings.HasPrefix(parts[i], "user@") {
+				return parts[i]
 			}
 		}
 	}

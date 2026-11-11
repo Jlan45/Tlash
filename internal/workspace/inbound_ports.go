@@ -2,8 +2,12 @@ package workspace
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"strings"
+	"syscall"
+	"time"
 
 	"go.yaml.in/yaml/v3"
 
@@ -47,21 +51,87 @@ func reported(cfg mihomoapi.Config, key string) int {
 	return 0
 }
 
-func busyError(ports []inboundPort) error {
-	parts := make([]string, len(ports))
-	for i, p := range ports {
-		parts[i] = fmt.Sprintf("%s %d", p.key, p.port)
-		if who := portowner.Describe(p.port); who != "" {
-			parts[i] += " 被 " + who + " 占用"
-		} else {
-			parts[i] += " 已被占用"
-		}
-	}
-	return fmt.Errorf("%s。请停止占用端口的程序，或在 设置 → 接管 修改端口", strings.Join(parts, "；"))
+// StaleCoreError means a core from this very data dir is running outside the current
+// supervisor (e.g. after switching service type) and holds the ports.
+type StaleCoreError struct {
+	PID int
+	err error
 }
 
-// checkPortsFree runs before the core starts: anything listening now isn't ours.
-func checkPortsFree(cfg []byte) error {
+func (e *StaleCoreError) Error() string { return e.err.Error() }
+
+func (w *Workspace) busyError(ports []inboundPort) error {
+	parts := make([]string, len(ports))
+	stale := 0
+	for i, p := range ports {
+		parts[i] = fmt.Sprintf("%s %d ", p.key, p.port)
+		o, ok := portowner.Find(p.port)
+		switch {
+		case !ok:
+			parts[i] += "已被占用（无法识别占用进程，可能需要 root）"
+		case w.ownsProcess(o):
+			stale = o.PID
+			parts[i] += fmt.Sprintf("被本数据目录残留的旧内核占用（pid %d，不受当前托管方式管理）", o.PID)
+		case otherTlashDir(o.Cmdline) != "":
+			parts[i] += fmt.Sprintf("被另一个 Tlash 数据目录 %s 的内核占用（pid %d）。可能同时用 root 和普通用户装过 Tlash：用 tlash --dir %s 停止它，或改用不同端口",
+				otherTlashDir(o.Cmdline), o.PID, otherTlashDir(o.Cmdline))
+		default:
+			parts[i] += "被 " + o.String() + " 占用"
+		}
+	}
+	err := fmt.Errorf("%s。请停止占用端口的程序，或在 设置 → 接管 修改端口", strings.Join(parts, "；"))
+	if stale != 0 {
+		return &StaleCoreError{PID: stale, err: err}
+	}
+	return err
+}
+
+// ownsProcess reports whether o is a core started for this workspace's runtime dir.
+func (w *Workspace) ownsProcess(o portowner.Owner) bool {
+	return strings.Contains(o.Cmdline, "-d "+w.RuntimeDir+" ") || strings.HasSuffix(o.Cmdline, "-d "+w.RuntimeDir)
+}
+
+// otherTlashDir extracts the data dir from a Tlash-managed core's "-d <dir>/runtime".
+func otherTlashDir(cmdline string) string {
+	f := strings.Fields(cmdline)
+	for i := 0; i+1 < len(f); i++ {
+		if f[i] == "-d" && strings.HasSuffix(f[i+1], "/runtime") && strings.Contains(f[i+1], "tlash") {
+			return strings.TrimSuffix(f[i+1], "/runtime")
+		}
+	}
+	return ""
+}
+
+// StopStaleCore terminates a leftover core of this workspace so the supervised one can bind.
+func (w *Workspace) StopStaleCore(pid int) error {
+	o, ok := findPID(pid)
+	if !ok || !w.ownsProcess(o) {
+		return fmt.Errorf("进程 %d 不是本数据目录的内核，未处理", pid)
+	}
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return err
+	}
+	_ = p.Signal(syscall.SIGTERM)
+	for range 50 {
+		if _, alive := findPID(pid); !alive {
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return p.Signal(syscall.SIGKILL)
+}
+
+func findPID(pid int) (portowner.Owner, bool) {
+	cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+	if err != nil || len(cmdline) == 0 {
+		return portowner.Owner{}, false
+	}
+	return portowner.Owner{PID: pid, Cmdline: strings.TrimSpace(strings.ReplaceAll(string(cmdline), "\x00", " "))}, true
+}
+
+// checkPortsFree runs before the core starts: anything listening now isn't supervised by us.
+func (w *Workspace) checkPortsFree(cfg []byte) error {
 	var busy []inboundPort
 	for _, p := range inboundPorts(cfg) {
 		if portowner.Busy(p.port) {
@@ -69,7 +139,7 @@ func checkPortsFree(cfg []byte) error {
 		}
 	}
 	if len(busy) > 0 {
-		return busyError(busy)
+		return w.busyError(busy)
 	}
 	return nil
 }
@@ -88,7 +158,12 @@ func (w *Workspace) verifyListeners(ctx context.Context, cfg []byte) error {
 		}
 	}
 	if len(failed) > 0 {
-		return fmt.Errorf("内核已运行，但端口未能监听：%w", busyError(failed))
+		err := w.busyError(failed)
+		var stale *StaleCoreError
+		if errors.As(err, &stale) {
+			return err
+		}
+		return fmt.Errorf("内核已运行，但端口未能监听：%w", err)
 	}
 	return nil
 }

@@ -263,7 +263,7 @@ func (w *Workspace) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := checkPortsFree(cfg); err != nil {
+	if err := w.checkPortsFree(cfg); err != nil {
 		return err
 	}
 	if err := w.Service().Install(ctx); err != nil {
