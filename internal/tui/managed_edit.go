@@ -123,7 +123,7 @@ func splitList(s string) []string {
 }
 
 // editManaged toggles bools and cycles enums in place; other rows open a one-field form.
-func editManaged(sess *session, row managedRow, openForm func(*inputForm)) tea.Cmd {
+func editManaged(sess *session, row managedRow) tea.Cmd {
 	cur, set := row.get(sess.ws.Settings().Managed)
 	switch {
 	case row.isBool:
@@ -144,14 +144,13 @@ func editManaged(sess *session, row managedRow, openForm func(*inputForm)) tea.C
 	if row.isList {
 		hint = strings.TrimSpace(hint + "  多项用逗号分隔")
 	}
-	openForm(newInputForm(row.label, func(v []string) tea.Cmd {
+	return showForm(newInputForm(row.label, func(v []string) tea.Cmd {
 		var probe appsettings.Managed
 		if err := row.set(&probe, v[0]); err != nil {
 			return notifyErr(row.label, err)
 		}
 		return applyManaged(sess, row.label+" 已更新", func(m *appsettings.Managed) { _ = row.set(m, v[0]) })
 	}).addText(row.label, cur, "", hint))
-	return nil
 }
 
 // applyManaged saves a managed-setting change and hot-reloads it into the running core.
@@ -162,9 +161,9 @@ func applyManaged(sess *session, okText string, fn func(*appsettings.Managed)) t
 	}, sess.refreshAll())
 }
 
-// renderManagedRows draws a settings list with the cursor row highlighted and its hint shown.
-func renderManagedRows(rows []managedRow, m appsettings.Managed, cursor, labelW int) string {
-	var b strings.Builder
+// managedRowLines renders "label  value" lines; the cursor row also shows its hint.
+func managedRowLines(rows []managedRow, m appsettings.Managed, cursor, labelW int) []string {
+	out := make([]string, len(rows))
 	for i, r := range rows {
 		val, set := r.get(m)
 		if !set {
@@ -173,14 +172,11 @@ func renderManagedRows(rows []managedRow, m appsettings.Managed, cursor, labelW 
 				val = styleDim.Render("未设置")
 			}
 		}
-		line := "  " + padRight(r.label, labelW) + val
-		if i == cursor {
-			line = styleSelected.Render(padRight("▸ "+r.label, labelW+2)) + val
-			if r.hint != "" {
-				line += styleDim.Render("  " + r.hint)
-			}
+		line := " " + padRight(r.label, labelW) + val
+		if i == cursor && r.hint != "" {
+			line += styleDim.Render("  " + r.hint)
 		}
-		b.WriteString(line + "\n")
+		out[i] = line
 	}
-	return b.String()
+	return out
 }

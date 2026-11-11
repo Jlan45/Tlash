@@ -12,7 +12,7 @@ import (
 
 const trafficHistoryLen = 240
 
-var statusPollInterval = 2 * time.Second
+var statusPollInterval = time.Second
 
 // session is the core state every page reads; only the app model mutates it.
 type session struct {
@@ -23,14 +23,17 @@ type session struct {
 	core coreState
 	// busy maps a job key to its status-bar text while it runs.
 	busy map[string]string
-	// activePage is the title of the page on screen, so pollers can stop when hidden.
-	activePage string
+	// activePanel is the title of the focused panel.
+	activePanel string
 
 	connected bool
 	lastErr   error
 	version   mihomoapi.Version
 	config    mihomoapi.Config
 	connCount int
+	// conns is the latest connections snapshot (refreshed with status) and when it was taken.
+	conns   []mihomoapi.Connection
+	connsAt time.Time
 
 	traffic     mihomoapi.Traffic
 	memory      int64
@@ -53,10 +56,21 @@ func appendCapped(xs []int64, v int64, limit int) []int64 {
 }
 
 type statusMsg struct {
-	version   mihomoapi.Version
-	config    mihomoapi.Config
-	connCount int
-	err       error
+	version mihomoapi.Version
+	config  mihomoapi.Config
+	conns   []mihomoapi.Connection
+	at      time.Time
+	err     error
+}
+
+func (s *session) applyStatus(msg statusMsg) {
+	s.lastErr = msg.err
+	s.connected = msg.err == nil
+	if msg.err != nil {
+		return
+	}
+	s.version, s.config = msg.version, msg.config
+	s.conns, s.connsAt, s.connCount = msg.conns, msg.at, len(msg.conns)
 }
 
 type statusTickMsg struct{}
@@ -76,9 +90,9 @@ func fetchStatus(c *mihomoapi.Client) tea.Cmd {
 		if err != nil {
 			return statusMsg{err: err}
 		}
-		msg := statusMsg{version: v, config: cfg}
-		if conns, err := c.Connections(ctx); err == nil {
-			msg.connCount = len(conns.Connections)
+		msg := statusMsg{version: v, config: cfg, at: time.Now()}
+		if snap, err := c.Connections(ctx); err == nil {
+			msg.conns = snap.Connections
 		}
 		return msg
 	}

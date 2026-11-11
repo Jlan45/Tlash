@@ -6,16 +6,21 @@ import (
 )
 
 // filterInput is the "/ to filter" field shared by list pages.
+// The zero value is usable: the text field is built on first start.
 type filterInput struct {
 	input  textinput.Model
+	ready  bool
 	active bool
 }
 
 func newFilterInput(placeholder string) filterInput {
-	return filterInput{input: newTextInput("/ ", placeholder)}
+	return filterInput{input: newTextInput("/ ", placeholder), ready: true}
 }
 
-func (f *filterInput) start() tea.Cmd {
+func (f *filterInput) start(placeholder string) tea.Cmd {
+	if !f.ready {
+		*f = newFilterInput(placeholder)
+	}
 	f.active = true
 	return f.input.Focus()
 }

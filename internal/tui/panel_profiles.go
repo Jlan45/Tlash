@@ -26,37 +26,21 @@ type editorDoneMsg struct {
 	err error
 }
 
-type profilesPage struct {
+type profilesPanel struct {
+	panelBase
 	sess     *session
 	profiles []profile.Profile
 	loadErr  error
-	cursor   int
-	form     *inputForm
+	content  fileCache
 }
 
-func newProfilesPage(sess *session) *profilesPage { return &profilesPage{sess: sess} }
+func newProfilesPanel(sess *session) *profilesPanel { return &profilesPanel{sess: sess} }
 
-func (p *profilesPage) title() string        { return "订阅" }
-func (p *profilesPage) capturingInput() bool { return p.form != nil }
-func (p *profilesPage) activate() tea.Cmd    { return p.reload() }
+func (p *profilesPanel) title() string     { return "订阅" }
+func (p *profilesPanel) tabs() []string    { return []string{"信息", "内容"} }
+func (p *profilesPanel) activate() tea.Cmd { return p.reload() }
 
-func (p *profilesPage) hints() []hint {
-	if p.form != nil {
-		return p.form.hints()
-	}
-	return []hint{
-		{"a", "添加订阅"},
-		{"enter", "启用"},
-		{"u", "更新"},
-		{"U", "更新全部"},
-		{"i", "导入本地配置"},
-		{"e", "用编辑器打开"},
-		{"m", "修改名称 / 链接 / UA"},
-		{"d", "删除"},
-	}
-}
-
-func (p *profilesPage) reload() tea.Cmd {
+func (p *profilesPanel) reload() tea.Cmd {
 	store := p.sess.ws.Profiles
 	return func() tea.Msg {
 		ps, err := store.List()
@@ -64,19 +48,18 @@ func (p *profilesPage) reload() tea.Cmd {
 	}
 }
 
-func (p *profilesPage) current() (profile.Profile, bool) {
-	if p.cursor < 0 || p.cursor >= len(p.profiles) {
-		return profile.Profile{}, false
+func (p *profilesPanel) current() (profile.Profile, bool) {
+	if c := p.ls.cursor; c >= 0 && c < len(p.profiles) {
+		return p.profiles[c], true
 	}
-	return p.profiles[p.cursor], true
+	return profile.Profile{}, false
 }
 
-func (p *profilesPage) update(msg tea.Msg) tea.Cmd {
+func (p *profilesPanel) update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case profilesMsg:
 		p.profiles, p.loadErr = msg.profiles, msg.err
-		p.cursor = max(0, min(p.cursor, len(p.profiles)-1))
-		return nil
+		p.ls.clamp(len(p.profiles))
 	case editorDoneMsg:
 		if msg.err != nil {
 			return notifyErr("编辑器退出异常", msg.err)
@@ -85,68 +68,52 @@ func (p *profilesPage) update(msg tea.Msg) tea.Cmd {
 		return p.sess.job("profile-edit", "校验修改后的配置", func(ctx context.Context) (string, error) {
 			return "修改已生效", ws.ReapplyAfterEdit(ctx, msg.id)
 		}, p.reload())
-	case tea.KeyPressMsg:
-		if p.form != nil {
-			cmd, done := p.form.update(msg)
-			if done {
-				p.form = nil
-			}
-			return cmd
-		}
-		return p.handleKey(msg)
 	}
 	return nil
 }
 
-func (p *profilesPage) handleKey(msg tea.KeyPressMsg) tea.Cmd {
-	ws := p.sess.ws
-	switch msg.String() {
-	case "up", "k":
-		p.cursor = max(p.cursor-1, 0)
-	case "down", "j":
-		p.cursor = min(p.cursor+1, max(len(p.profiles)-1, 0))
-	case "a":
-		p.form = p.addRemoteForm()
-	case "i":
-		p.form = p.importForm()
-	case "U":
-		return p.updateAll()
+func (p *profilesPanel) actions() []action {
+	ws, sess := p.sess.ws, p.sess
+	acts := []action{
+		{"a", "添加订阅链接", func() tea.Cmd { return showForm(p.addRemoteForm()) }},
+		{"i", "导入本地配置", func() tea.Cmd { return showForm(p.importForm()) }},
+		{"U", "更新全部订阅", p.updateAll},
 	}
 	cur, ok := p.current()
 	if !ok {
-		return nil
+		return acts
 	}
-	switch msg.String() {
-	case "enter":
-		if cur.ID == ws.Settings().ActiveProfile {
-			return nil
-		}
-		return p.sess.job("profile-activate", "切换订阅", func(ctx context.Context) (string, error) {
-			return "已启用 " + cur.Name, ws.Activate(ctx, cur.ID)
-		}, p.reload(), p.sess.refreshAll())
-	case "u":
-		if cur.Kind != profile.KindRemote {
-			return notify("本地配置无法在线更新，按 e 编辑")
-		}
-		return p.sess.job("profile-update-"+cur.ID, "更新 "+cur.Name, func(ctx context.Context) (string, error) {
-			_, err := ws.UpdateProfile(ctx, cur.ID)
-			return cur.Name + " 已更新", err
-		}, p.reload(), p.sess.refreshAll())
-	case "e":
-		return p.openEditor(cur)
-	case "m":
-		p.form = p.editMetaForm(cur)
-	case "d":
-		return askConfirm(fmt.Sprintf("删除订阅「%s」？", cur.Name), func() tea.Cmd {
-			return p.sess.job("profile-delete", "删除订阅", func(ctx context.Context) (string, error) {
-				return "已删除 " + cur.Name, ws.DeleteProfile(ctx, cur.ID)
-			}, p.reload(), p.sess.refreshAll())
-		})
-	}
-	return nil
+	return append([]action{
+		{"space", "启用此订阅", func() tea.Cmd {
+			if cur.ID == ws.Settings().ActiveProfile {
+				return notify(cur.Name + " 已在使用中")
+			}
+			return sess.job("profile-activate", "切换订阅", func(ctx context.Context) (string, error) {
+				return "已启用 " + cur.Name, ws.Activate(ctx, cur.ID)
+			}, p.reload(), sess.refreshAll())
+		}},
+		{"u", "更新此订阅", func() tea.Cmd {
+			if cur.Kind != profile.KindRemote {
+				return notify("本地配置无法在线更新，按 e 编辑")
+			}
+			return sess.job("profile-update-"+cur.ID, "更新 "+cur.Name, func(ctx context.Context) (string, error) {
+				_, err := ws.UpdateProfile(ctx, cur.ID)
+				return cur.Name + " 已更新", err
+			}, p.reload(), sess.refreshAll())
+		}},
+		{"e", "用编辑器打开", func() tea.Cmd { return p.openEditor(cur) }},
+		{"m", "修改名称 / 链接 / UA / 更新间隔", func() tea.Cmd { return showForm(p.editMetaForm(cur)) }},
+		{"d", "删除此订阅", func() tea.Cmd {
+			return askConfirm(fmt.Sprintf("删除订阅「%s」？", cur.Name), func() tea.Cmd {
+				return sess.job("profile-delete", "删除订阅", func(ctx context.Context) (string, error) {
+					return "已删除 " + cur.Name, ws.DeleteProfile(ctx, cur.ID)
+				}, p.reload(), sess.refreshAll())
+			})
+		}},
+	}, acts...)
 }
 
-func (p *profilesPage) updateAll() tea.Cmd {
+func (p *profilesPanel) updateAll() tea.Cmd {
 	ws := p.sess.ws
 	var remote []profile.Profile
 	for _, pr := range p.profiles {
@@ -171,7 +138,7 @@ func (p *profilesPage) updateAll() tea.Cmd {
 	}, p.reload(), p.sess.refreshAll())
 }
 
-func (p *profilesPage) addRemoteForm() *inputForm {
+func (p *profilesPanel) addRemoteForm() *inputForm {
 	ws := p.sess.ws
 	return newInputForm("添加订阅", func(v []string) tea.Cmd {
 		in := workspace.NewRemote{URL: v[0], Name: v[1], UserAgent: v[2], UseProxy: v[3] == "是"}
@@ -186,7 +153,7 @@ func (p *profilesPage) addRemoteForm() *inputForm {
 		addToggle("通过内核代理下载", false, "订阅地址被墙时开启（需内核正在运行）")
 }
 
-func (p *profilesPage) importForm() *inputForm {
+func (p *profilesPanel) importForm() *inputForm {
 	ws := p.sess.ws
 	return newInputForm("导入本地配置", func(v []string) tea.Cmd {
 		return p.sess.job("profile-add", "导入配置", func(ctx context.Context) (string, error) {
@@ -198,7 +165,7 @@ func (p *profilesPage) importForm() *inputForm {
 		addText("名称", "", "留空则使用文件名", "")
 }
 
-func (p *profilesPage) editMetaForm(cur profile.Profile) *inputForm {
+func (p *profilesPanel) editMetaForm(cur profile.Profile) *inputForm {
 	ws := p.sess.ws
 	f := newInputForm("修改订阅", func(v []string) tea.Cmd {
 		next := cur
@@ -229,7 +196,7 @@ func (p *profilesPage) editMetaForm(cur profile.Profile) *inputForm {
 	return f
 }
 
-func (p *profilesPage) openEditor(cur profile.Profile) tea.Cmd {
+func (p *profilesPanel) openEditor(cur profile.Profile) tea.Cmd {
 	return openInEditor(p.sess.ws.Profiles.ContentPath(cur.ID), func(err error) tea.Msg { return editorDoneMsg{id: cur.ID, err: err} })
 }
 
@@ -242,50 +209,67 @@ func expandHome(path string) string {
 	return path
 }
 
-func (p *profilesPage) view(w, h int) string {
-	if p.form != nil {
-		return p.form.view(w)
-	}
-	var b strings.Builder
-	b.WriteString(styleTitle.Render("订阅") + "\n\n")
-	if p.loadErr != nil {
-		return b.String() + styleBad.Render("读取订阅失败: "+p.loadErr.Error())
-	}
-	if len(p.profiles) == 0 {
-		return b.String() + styleDim.Render("还没有订阅。按 a 添加订阅链接，或按 i 导入本地配置文件。")
-	}
+func (p *profilesPanel) rows(w int) []string {
 	active := p.sess.ws.Settings().ActiveProfile
-	nameW := 8
-	for _, pr := range p.profiles {
-		nameW = max(nameW, ansi.StringWidth(pr.Name))
-	}
-	nameW = min(nameW, max(w-52, 8), 32)
+	nameW := max(w-16, 6)
+	out := make([]string, len(p.profiles))
 	for i, pr := range p.profiles {
-		mark := "○"
+		mark := " "
 		if pr.ID == active {
 			mark = styleAccent.Render("●")
 		}
-		kind := "订阅"
-		if pr.Kind == profile.KindLocal {
-			kind = "本地"
+		var info string
+		switch {
+		case pr.Kind == profile.KindLocal:
+			info = styleDim.Render("本地")
+		case pr.Usage != nil && pr.Usage.Total > 0:
+			info = usagePercent(pr.Usage)
+		default:
+			info = styleDim.Render(agoLabel(pr.UpdatedAt))
 		}
-		line := fmt.Sprintf(" %s %s  %s  %s  %s", mark, padRight(ansi.Truncate(pr.Name, nameW, "…"), nameW),
-			styleDim.Render(kind), padRight(usageLabel(pr.Usage), 22), styleDim.Render("更新于 "+agoLabel(pr.UpdatedAt)))
-		if i == p.cursor {
-			line = styleSelected.Render(padRight(ansi.Strip(line), w))
-		}
-		b.WriteString(line + "\n")
+		out[i] = mark + " " + padRight(ansi.Truncate(pr.Name, nameW, "…"), nameW) + " " + info
 	}
-	if cur, ok := p.current(); ok {
-		b.WriteString("\n" + styleDim.Render(strings.Repeat("─", min(w, 60))) + "\n")
-		b.WriteString(p.detail(cur))
-	}
-	return b.String()
+	return out
 }
 
-func (p *profilesPage) detail(pr profile.Profile) string {
+func usagePercent(u *profile.Usage) string {
+	ratio := float64(u.Used()) / float64(u.Total)
+	style := styleOK
+	if ratio > 0.9 {
+		style = styleBad
+	} else if ratio > 0.7 {
+		style = styleWarn
+	}
+	return style.Render(fmt.Sprintf("%3.0f%%", ratio*100))
+}
+
+func (p *profilesPanel) renderMain(tab, w, h int, focused bool) string {
+	if p.loadErr != nil {
+		return styleBad.Render("读取订阅失败: " + p.loadErr.Error())
+	}
+	cur, ok := p.current()
+	if !ok {
+		return styleDim.Render("还没有订阅。按 a 添加订阅链接，或按 i 导入本地配置文件。")
+	}
+	if tab == 1 {
+		path := p.sess.ws.Profiles.ContentPath(cur.ID)
+		content, err := p.content.read(path)
+		if err != nil {
+			return styleBad.Render("读取失败: " + err.Error())
+		}
+		return styleDim.Render("# "+path+"（原始订阅，Tlash 不改动；e 用编辑器打开）") + "\n" + content
+	}
+	return p.detail(cur)
+}
+
+func (p *profilesPanel) detail(pr profile.Profile) string {
 	var b strings.Builder
 	row := func(label, value string) { b.WriteString(styleDim.Render(padRight(label, 10)) + value + "\n") }
+	name := styleBold.Render(pr.Name)
+	if pr.ID == p.sess.ws.Settings().ActiveProfile {
+		name += styleAccent.Render("  ● 使用中")
+	}
+	row("名称", name)
 	if pr.Kind == profile.KindRemote {
 		row("链接", maskURL(pr.URL))
 		ua := pr.UserAgent
@@ -306,11 +290,12 @@ func (p *profilesPage) detail(pr profile.Profile) string {
 	}
 	if pr.Usage != nil {
 		u := pr.Usage
-		row("流量", fmt.Sprintf("已用 %s / 共 %s（↑ %s ↓ %s）", formatBytes(u.Used()), totalLabel(u.Total), formatBytes(u.Upload), formatBytes(u.Download)))
+		row("流量", usageLabel(u)+fmt.Sprintf("  已用 %s / 共 %s（↑ %s ↓ %s）", formatBytes(u.Used()), totalLabel(u.Total), formatBytes(u.Upload), formatBytes(u.Download)))
 		if !u.Expire.IsZero() {
 			row("到期", expireLabel(u.Expire))
 		}
 	}
+	row("更新于", agoLabel(pr.UpdatedAt))
 	row("文件", p.sess.ws.Profiles.ContentPath(pr.ID))
 	return b.String()
 }

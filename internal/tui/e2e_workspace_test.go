@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -15,24 +14,8 @@ import (
 	"github.com/Jlan45/Tlash/internal/workspace"
 )
 
-func typeText(app *App, s string) {
-	for _, r := range s {
-		press(app, string(r))
-	}
-}
-
-func pageIndex(t *testing.T, app *App, title string) string {
-	for i, p := range app.pages {
-		if p.title() == title {
-			return fmt.Sprint(i + 1)
-		}
-	}
-	t.Fatalf("no page %q", title)
-	return ""
-}
-
 // From an empty data dir to a running, proxied core using only key presses.
-func TestWorkspaceFlowFromScratch(t *testing.T) {
+func TestWorkspaceKeyboardFlowFromScratch(t *testing.T) {
 	bin := os.Getenv("TLASH_MIHOMO_BIN")
 	if bin == "" {
 		t.Skip("TLASH_MIHOMO_BIN not set")
@@ -63,38 +46,38 @@ rules:
 
 	app := New(Options{Client: ws.Client(), Workspace: ws, DelayTest: mihomoapi.DelayTest{URL: "http://127.0.0.1:1/", Timeout: time.Second}})
 	defer app.Close()
-	app.Update(teaWindowSize(110, 32))
+	app.Update(teaWindowSize(120, 34))
 	run(app, app.sess.refreshAll())
 
 	out := screen(app)
 	if !strings.Contains(out, "开始使用") || !strings.Contains(out, "● 已停止") {
 		t.Fatalf("expected setup checklist:\n%s", out)
 	}
+	t.Logf("first run:\n%s", out)
 
-	// 1. Import the core from a local file on the core page.
-	press(app, pageIndex(t, app, "内核"), "i")
+	// 1. Settings → 内核 (first category): i imports a local core.
+	press(app, panelKey(t, app, "设置"), "i")
 	typeText(app, bin)
 	press(app, "enter")
 	if !ws.CoreInstalled() || app.sess.core.version == "" {
 		t.Fatalf("core not installed:\n%s", screen(app))
 	}
-	t.Logf("core page:\n%s", screen(app))
 
-	// 2. Import a profile; the first one becomes active.
-	press(app, pageIndex(t, app, "订阅"), "i")
+	// 2. Subscriptions: i imports a profile; the first one becomes active.
+	press(app, panelKey(t, app, "订阅"), "i")
 	typeText(app, profilePath)
 	press(app, "enter", "enter")
 	if out = screen(app); !strings.Contains(out, "● 机场") {
 		t.Fatalf("profile not imported/active:\n%s", out)
 	}
 
-	// 3. Start from the overview.
+	// 3. Status: s starts the core.
 	press(app, "1", "s")
 	run(app, fetchStatus(app.sess.client))
-	if out = screen(app); !strings.Contains(out, "● 运行中") || !strings.Contains(out, "机场") {
+	if out = screen(app); !strings.Contains(out, "● 运行中") {
 		t.Fatalf("core not running:\n%s", out)
 	}
-	t.Logf("overview:\n%s", out)
+	t.Logf("running:\n%s", out)
 
 	// Cancelling a confirm must not leave a job marked busy.
 	press(app, "s", "n")
@@ -102,21 +85,27 @@ rules:
 		t.Fatalf("cancelled stop left busy=%v running=%v", app.sess.busy, app.sess.core.running)
 	}
 
-	// 4. The profile's nodes are live.
-	press(app, "2")
+	// 4. Groups show the profile's nodes.
+	press(app, panelKey(t, app, "代理组"))
 	if out = screen(app); !strings.Contains(out, "🚀 节点选择") || !strings.Contains(out, "香港 01") {
-		t.Fatalf("proxies missing:\n%s", out)
+		t.Fatalf("groups missing:\n%s", out)
 	}
 
-	// 5. Toggle a managed setting; it reaches the running core.
-	press(app, pageIndex(t, app, "内核"), "down", "enter")
+	// 5. Settings → 接管: enter the main panel, move to 允许局域网, enter toggles it live.
+	press(app, panelKey(t, app, "设置"), "down", "enter", "down", "enter")
 	cfg, err := ws.Client().Config(context.Background())
 	if err != nil || !cfg.AllowLan {
 		t.Fatalf("allow-lan not applied: %+v %v\n%s", cfg, err, screen(app))
 	}
 
-	// 6. Stop with confirmation.
-	press(app, "s", "y")
+	// 6. Overrides: preview tab renders the generated config.
+	press(app, panelKey(t, app, "覆写"), "]")
+	if out = screen(app); !strings.Contains(out, "最终配置预览") || !strings.Contains(out, "external-controller-unix") {
+		t.Fatalf("preview:\n%s", out)
+	}
+
+	// 7. Stop with confirmation.
+	press(app, "1", "s", "y")
 	if app.sess.core.running {
 		t.Fatalf("still running:\n%s", screen(app))
 	}

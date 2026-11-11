@@ -16,7 +16,7 @@ const logBufferLimit = 2000
 
 var logLevels = []string{"debug", "info", "warning", "error"}
 
-type logsPage struct {
+type logView struct {
 	sess    *session
 	streams *coreStreams
 	level   string
@@ -34,46 +34,58 @@ type logsPage struct {
 	cacheLines []string
 }
 
-func newLogsPage(sess *session, streams *coreStreams, level string) *logsPage {
-	return &logsPage{sess: sess, streams: streams, level: level, buf: newLogBuffer(logBufferLimit), filter: newFilterInput("过滤日志")}
+func newLogView(sess *session, streams *coreStreams, level string) *logView {
+	return &logView{sess: sess, streams: streams, level: level, buf: newLogBuffer(logBufferLimit), filter: newFilterInput("过滤日志")}
 }
 
-func (p *logsPage) title() string        { return "日志" }
-func (p *logsPage) activate() tea.Cmd    { return nil }
-func (p *logsPage) capturingInput() bool { return p.filter.active }
-
-func (p *logsPage) hints() []hint {
+// actions are the logs tab's keys while the main panel is focused.
+func (p *logView) actions() []action {
 	pause := "暂停"
 	if p.paused {
 		pause = "继续"
 	}
-	return []hint{
-		{"space", pause},
-		{"l", "日志级别：" + p.level},
-		{"/", "过滤"},
-		{"c", "清空"},
-		{"x", "导出到文件"},
-		{"j/k", "滚动"},
-		{"G", "跳到最新"},
+	return []action{
+		{"space", pause, func() tea.Cmd { p.togglePause(); return nil }},
+		{"L", "日志级别：" + p.level, p.cycleLevel},
+		{"/", "过滤日志", func() tea.Cmd { return p.filter.start("过滤日志") }},
+		{"c", "清空", func() tea.Cmd { p.clear(); return nil }},
+		{"w", "导出到文件", p.export},
+		{"G", "跳到最新", func() tea.Cmd { p.scroll = 0; return nil }},
 	}
 }
 
-func (p *logsPage) update(msg tea.Msg) tea.Cmd {
-	switch msg := msg.(type) {
-	case logMsg:
-		if p.paused {
-			p.pending = appendCappedLogs(p.pending, msg, logBufferLimit)
-		} else {
-			p.buf.add(msg)
+func (p *logView) capturing() bool { return p.filter.active }
+
+func (p *logView) togglePause() {
+	p.paused = !p.paused
+	if !p.paused {
+		for _, e := range p.pending {
+			p.buf.add(e)
 		}
-		return nil
-	case tea.KeyPressMsg:
-		if p.filter.active {
-			return p.updateFilter(msg)
-		}
-		return p.handleKey(msg)
+		p.pending = nil
 	}
-	return nil
+}
+
+func (p *logView) cycleLevel() tea.Cmd {
+	p.level = nextLogLevel(p.level)
+	p.streams.setLogLevel(p.level)
+	return notify("日志级别：" + p.level + "（仅影响之后的日志）")
+}
+
+func (p *logView) clear() {
+	p.buf.clear()
+	p.pending = nil
+	p.scroll = 0
+}
+
+func (p *logView) update(msg tea.Msg) {
+	if m, ok := msg.(logMsg); ok {
+		if p.paused {
+			p.pending = appendCappedLogs(p.pending, m, logBufferLimit)
+		} else {
+			p.buf.add(m)
+		}
+	}
 }
 
 func appendCappedLogs(xs []logMsg, e logMsg, limit int) []logMsg {
@@ -84,12 +96,12 @@ func appendCappedLogs(xs []logMsg, e logMsg, limit int) []logMsg {
 	return xs
 }
 
-func (p *logsPage) updateFilter(msg tea.KeyPressMsg) tea.Cmd {
-	p.scroll = 0
-	return p.filter.update(msg)
-}
-
-func (p *logsPage) handleKey(msg tea.KeyPressMsg) tea.Cmd {
+// key handles scrolling and filter typing; reports whether it consumed the key.
+func (p *logView) key(msg tea.KeyPressMsg) (tea.Cmd, bool) {
+	if p.filter.active {
+		p.scroll = 0
+		return p.filter.update(msg), true
+	}
 	switch msg.String() {
 	case "up", "k":
 		p.scroll++
@@ -101,33 +113,13 @@ func (p *logsPage) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 		p.scroll -= 10
 	case "home", "g":
 		p.scroll = len(p.cacheLines)
-	case "end", "G":
+	case "end":
 		p.scroll = 0
-	case "space":
-		p.paused = !p.paused
-		if !p.paused {
-			for _, e := range p.pending {
-				p.buf.add(e)
-			}
-			p.pending = nil
-		}
-	case "l":
-		p.level = nextLogLevel(p.level)
-		p.streams.setLogLevel(p.level)
-		return notify("日志级别：" + p.level + "（仅影响之后的日志）")
-	case "/":
-		return p.filter.start()
-	case "esc":
-		p.filter.clear()
-	case "c":
-		p.buf.clear()
-		p.pending = nil
-		p.scroll = 0
-	case "x":
-		return p.export()
+	default:
+		return nil, false
 	}
 	p.scroll = max(p.scroll, 0)
-	return nil
+	return nil, true
 }
 
 func nextLogLevel(cur string) string {
@@ -139,7 +131,7 @@ func nextLogLevel(cur string) string {
 	return "info"
 }
 
-func (p *logsPage) export() tea.Cmd {
+func (p *logView) export() tea.Cmd {
 	entries := append([]logMsg(nil), p.buf.matching(p.filter.value())...)
 	return func() tea.Msg {
 		name := "tlash-logs-" + time.Now().Format("20060102-150405") + ".log"
@@ -155,7 +147,7 @@ func (p *logsPage) export() tea.Cmd {
 	}
 }
 
-func (p *logsPage) wrappedLines(w int) []string {
+func (p *logView) wrappedLines(w int) []string {
 	key := fmt.Sprintf("%d|%d|%s", p.buf.seq, w, p.filter.value())
 	if key == p.cacheKey {
 		return p.cacheLines
@@ -178,21 +170,21 @@ func (p *logsPage) wrappedLines(w int) []string {
 	return lines
 }
 
-func (p *logsPage) view(w, h int) string {
-	header := styleTitle.Render("日志") + styleDim.Render("  级别 "+p.level)
+func (p *logView) view(w, h int) string {
+	header := styleDim.Render("级别 " + p.level)
 	if p.paused {
 		header += styleWarn.Render(fmt.Sprintf("  已暂停，%d 条新日志", len(p.pending)))
 	}
 	header += "\n" + p.filter.line(w)
 
 	lines := p.wrappedLines(w)
-	listH := h - 3
+	listH := h - 2
 	if len(lines) == 0 {
 		hintText := "等待日志…"
 		if !p.sess.connected {
 			hintText = "未连接到内核"
 		}
-		return header + "\n\n" + styleDim.Render(hintText)
+		return header + "\n" + styleDim.Render(hintText)
 	}
 	p.scroll = min(p.scroll, max(len(lines)-listH, 0))
 	end := len(lines) - p.scroll
@@ -200,7 +192,7 @@ func (p *logsPage) view(w, h int) string {
 	if p.scroll > 0 {
 		header += styleDim.Render(fmt.Sprintf("  ↑ 向上滚动 %d 行，G 回到最新", p.scroll))
 	}
-	return header + "\n\n" + strings.Join(lines[start:end], "\n")
+	return header + "\n" + strings.Join(lines[start:end], "\n")
 }
 
 func levelLabel(t string) string {

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/Jlan45/Tlash/internal/mihomoapi"
@@ -106,34 +107,23 @@ func TestFitBlockIsExact(t *testing.T) {
 	}
 }
 
-// Every page must render inside the frame at any size without panicking.
-func TestRenderSizes(t *testing.T) {
-	ep, _ := mihomoapi.ParseEndpoint("127.0.0.1:1")
-	app := New(Options{Client: mihomoapi.New(ep, ""), DelayTest: mihomoapi.DelayTest{URL: "http://x", Timeout: time.Second}})
-	defer app.Close()
-	pp := app.pages[1].(*proxiesPage)
-	pp.update(proxiesMsg{proxies: sampleProxies()})
-	app.sess.connected = true
-	for _, size := range [][2]int{{40, 10}, {80, 24}, {200, 60}, {30, 5}} {
-		app.Update(teaWindowSize(size[0], size[1]))
-		for i := range app.pages {
-			app.active = i
-			out := app.render()
-			lines := strings.Split(out, "\n")
-			if size[0] >= 40 && len(lines) != size[1] {
-				t.Errorf("%dx%d page %d: %d lines", size[0], size[1], i, len(lines))
-			}
-			for _, l := range lines {
-				if w := ansi.StringWidth(l); w > size[0] {
-					t.Errorf("%dx%d page %d: line width %d > %d: %q", size[0], size[1], i, w, size[0], ansi.Strip(l))
-				}
-			}
+// assertFits checks the screen is exactly height lines, none wider than width.
+func assertFits(t *testing.T, app *App, label string) {
+	t.Helper()
+	lines := strings.Split(app.render(), "\n")
+	if len(lines) != app.height {
+		t.Errorf("%s: %d lines, want %d", label, len(lines), app.height)
+	}
+	for _, l := range lines {
+		if w := ansi.StringWidth(l); w > app.width {
+			t.Errorf("%s: line width %d > %d: %q", label, w, app.width, ansi.Strip(l))
+			return
 		}
 	}
 }
 
-// Workspace pages (profiles, core, setup checklist) also fit every size.
-func TestRenderSizesWithWorkspace(t *testing.T) {
+// Every panel, tab, focus and screen mode must fit the terminal, popups included.
+func TestLayoutFitsEverywhere(t *testing.T) {
 	dir, err := os.MkdirTemp("", "tlr")
 	if err != nil {
 		t.Fatal(err)
@@ -143,32 +133,66 @@ func TestRenderSizesWithWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	app := New(Options{Client: ws.Client(), Workspace: ws, DelayTest: mihomoapi.DelayTest{URL: "http://x", Timeout: time.Second}})
-	defer app.Close()
-	app.sess.core = coreState{known: true, installed: true, version: "v1.19.34", kind: "systemd"}
-	pp := app.pages[2].(*profilesPage)
-	pp.update(profilesMsg{profiles: []profile.Profile{{
-		ID: "a", Name: "一个名字非常非常非常非常长的机场订阅", Kind: profile.KindRemote, URL: "https://sub.example.com/x?token=1",
-		Usage: &profile.Usage{Upload: 1 << 30, Download: 5 << 30, Total: 100 << 30, Expire: time.Now().Add(72 * time.Hour)},
-	}}})
-	for _, size := range [][2]int{{40, 10}, {80, 24}, {160, 50}} {
-		app.Update(teaWindowSize(size[0], size[1]))
-		for i := range app.pages {
-			app.active = i
-			for _, l := range strings.Split(app.render(), "\n") {
-				if w := ansi.StringWidth(l); w > size[0] {
-					t.Errorf("%dx%d page %s: width %d: %q", size[0], size[1], app.pages[i].title(), w, ansi.Strip(l))
+	ep, _ := mihomoapi.ParseEndpoint("127.0.0.1:1")
+	for _, external := range []bool{false, true} {
+		opts := Options{Client: ws.Client(), Workspace: ws, DelayTest: mihomoapi.DelayTest{URL: "http://x", Timeout: time.Second}}
+		if external {
+			opts = Options{Client: mihomoapi.New(ep, ""), DelayTest: opts.DelayTest}
+		}
+		app := New(opts)
+		app.sess.connected = true
+		app.sess.core = coreState{known: true, installed: true, running: true, version: "v1.19.34", kind: "systemd"}
+		app.sess.conns = []mihomoapi.Connection{{ID: "c1", Metadata: mihomoapi.ConnectionMetadata{Host: "一个很长很长的域名.example.com", DestinationPort: "443"}, Chains: []string{"香港 01", "🚀 节点选择"}}}
+		app.broadcast(statusMsg{conns: app.sess.conns})
+		app.broadcast(proxiesMsg{proxies: sampleProxies()})
+		if !external {
+			app.broadcast(profilesMsg{profiles: []profile.Profile{{
+				ID: "a", Name: "一个名字非常非常非常非常长的机场订阅", Kind: profile.KindRemote, URL: "https://sub.example.com/x?token=1",
+				Usage: &profile.Usage{Upload: 1 << 30, Download: 5 << 30, Total: 100 << 30, Expire: time.Now().Add(72 * time.Hour)},
+			}}})
+		}
+		for _, size := range [][2]int{{40, 12}, {79, 24}, {100, 30}, {200, 60}} {
+			app.Update(teaWindowSize(size[0], size[1]))
+			for mode := range 3 {
+				app.mode = screenMode(mode)
+				for i, p := range app.panels {
+					app.focus = i
+					for tab := range p.tabs() {
+						app.tabs[i] = tab
+						for _, inMain := range []bool{false, true} {
+							app.inMain = inMain
+							assertFits(t, app, fmt.Sprintf("ext=%v %dx%d mode=%d %s/%s main=%v", external, size[0], size[1], mode, p.title(), p.tabs()[tab], inMain))
+						}
+					}
 				}
 			}
+			app.mode, app.focus, app.inMain = modeNormal, 0, false
+			app.help = true
+			assertFits(t, app, fmt.Sprintf("help %dx%d", size[0], size[1]))
+			app.help = false
+			app.menu = &actionMenu{title: "菜单", items: app.contextActions()}
+			assertFits(t, app, fmt.Sprintf("menu %dx%d", size[0], size[1]))
+			app.menu = nil
+			app.form = newInputForm("添加订阅", func([]string) tea.Cmd { return nil }).addText("订阅链接", "", "https://...", "需要 Clash 格式")
+			assertFits(t, app, fmt.Sprintf("form %dx%d", size[0], size[1]))
+			app.form = nil
 		}
-		// A form open on the profiles page must fit too.
-		app.active = 2
-		pp.form = pp.addRemoteForm()
-		for _, l := range strings.Split(app.render(), "\n") {
-			if w := ansi.StringWidth(l); w > size[0] {
-				t.Errorf("%dx%d form: width %d", size[0], size[1], w)
-			}
-		}
-		pp.form = nil
+		app.Close()
+	}
+}
+
+// Unfocused panels shrink so the focused one gets the room.
+func TestSideHeightsFavorFocus(t *testing.T) {
+	app := &App{panels: make([]panel, 7), focus: 2}
+	hs := app.sideHeights(23, []int{2, 5, 20, 3, 40, 100, 8}, false)
+	total := 0
+	for _, h := range hs {
+		total += h
+	}
+	if total != 23 || hs[2] < 5 {
+		t.Errorf("heights = %v (total %d)", hs, total)
+	}
+	if hs := app.sideHeights(60, []int{2, 5, 20, 3, 40, 100, 8}, false); hs[0] != 4 || hs[1] != 5 {
+		t.Errorf("roomy heights = %v", hs)
 	}
 }
