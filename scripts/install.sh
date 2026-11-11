@@ -58,12 +58,17 @@ detect_arch() {
 	esac
 }
 
-# Newest release including pre-releases; GitHub's /releases/latest skips those.
+# Newest published release including pre-releases (GitHub's /releases/latest skips those).
+# The list API isn't ordered by publish time (alpha.9 sorts before alpha.10), so sort by
+# published_at ourselves. Drafts have "published_at": null and are skipped.
 resolve_version() {
 	[ -n "$version" ] && return
 	tmp="$workdir/releases.json"
-	if fetch "https://api.github.com/repos/$REPO/releases?per_page=1" "$tmp" 2>/dev/null; then
-		version=$(sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' "$tmp" | head -n 1)
+	if fetch "https://api.github.com/repos/$REPO/releases?per_page=20" "$tmp" 2>/dev/null; then
+		version=$(awk -F'"' '
+			/"tag_name":/ { tag = $4 }
+			/"published_at": "/ { print $4, tag }
+		' "$tmp" | sort -r | head -n 1 | cut -d' ' -f2)
 	fi
 	[ -n "$version" ] || die "无法从 GitHub API 获取最新版本（服务器无法访问 api.github.com 时请用 version=vX.Y.Z 指定）"
 }
