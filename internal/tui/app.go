@@ -328,10 +328,14 @@ func (a *App) handleSideKey(msg tea.KeyPressMsg) tea.Cmd {
 	ls := p.list()
 	n := len(p.rows(a.sideW))
 	switch msg.String() {
-	case "tab", "right", "l":
+	case "tab":
 		return a.focusPanel((a.focus + 1) % len(a.panels))
-	case "shift+tab", "left", "h":
+	case "shift+tab":
 		return a.focusPanel((a.focus + len(a.panels) - 1) % len(a.panels))
+	case "right", "l":
+		a.inMain = true
+	case "left", "h":
+		// Nothing to the left of the side list.
 	case "up", "k":
 		// Moving past the first row continues into the panel above, at its last row.
 		if ls.cursor <= 0 || isSummary(p) {
@@ -740,7 +744,8 @@ func (a *App) renderHelp() string {
 	}
 	lines = append(lines, "", styleTitle.Render("全局"), "")
 	for _, g := range []hint{
-		{"←/→ h/l tab（左侧）", "切换左侧面板"},
+		{"↑/↓ tab shift+tab", "切换左侧面板（↑↓ 到头自动跨面板）"},
+		{"→ l（左侧）", "进入主面板"},
 		{fmt.Sprintf("1-%d", len(a.panels)), "直接聚焦面板"},
 		{"j/k ↑/↓ g/G", "移动 / 首尾"},
 		{"enter / esc", "进入主面板 / 返回左侧"},

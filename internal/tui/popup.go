@@ -70,9 +70,9 @@ func popupBox(content string, border color.Color) string {
 // overlay draws box centered over bg (a w×h screen).
 func overlay(bg, box string, w, h int) string {
 	bw, bh := lipgloss.Width(box), lipgloss.Height(box)
-	if bw > w {
-		box = fitBlock(box, w, min(bh, h))
-		bw, bh = w, min(bh, h)
+	if bw > w || bh > h {
+		bw, bh = min(bw, w), min(bh, h)
+		box = fitBlock(box, bw, bh)
 	}
 	x, y := max((w-bw)/2, 0), max((h-bh)/3, 0)
 	return lipgloss.NewCompositor(

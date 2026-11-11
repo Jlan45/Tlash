@@ -328,8 +328,16 @@ func TestMainArrowsSwitchTabs(t *testing.T) {
 	if app.inMain {
 		t.Fatal("esc should return to the side list")
 	}
-	press(app, "right") // on the side, → still switches panels
+	press(app, "left") // on the side, ← does nothing
+	if app.inMain || app.cur().title() != "状态" {
+		t.Fatalf("side left: inMain=%v panel=%s", app.inMain, app.cur().title())
+	}
+	press(app, "right") // on the side, → enters the main panel instead of switching panels
+	if !app.inMain || app.cur().title() != "状态" {
+		t.Fatalf("side right: inMain=%v panel=%s", app.inMain, app.cur().title())
+	}
+	press(app, "esc", "tab")
 	if app.cur().title() != "代理组" {
-		t.Fatalf("side right went to %s", app.cur().title())
+		t.Fatalf("tab went to %s", app.cur().title())
 	}
 }
