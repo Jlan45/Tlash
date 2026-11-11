@@ -64,3 +64,19 @@ func sparkline(samples []int64, width int) string {
 	}
 	return b.String()
 }
+
+// flagsToText spells regional-indicator flags as their letters (🇸🇬 → SG). Many SSH terminal
+// fonts can't draw flags and render a squeezed box over the next character; two letters take
+// the same two cells, so layout is unchanged. Display only: names sent to mihomo stay intact.
+func flagsToText(s string) string {
+	const first, last = 0x1F1E6, 0x1F1FF
+	if !strings.ContainsFunc(s, func(r rune) bool { return r >= first && r <= last }) {
+		return s
+	}
+	return strings.Map(func(r rune) rune {
+		if r >= first && r <= last {
+			return 'A' + (r - first)
+		}
+		return r
+	}, s)
+}

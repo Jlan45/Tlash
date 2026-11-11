@@ -168,3 +168,38 @@ func assertProxy(t *testing.T, w *Workspace, name string) {
 		t.Fatalf("proxy %q not loaded in running core", name)
 	}
 }
+
+// A taken port fails Start with the culprit named, instead of a core that silently lacks it.
+func TestStartReportsBusyPort(t *testing.T) {
+	w := openTestWorkspace(t, "process")
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	busy := ln.Addr().(*net.TCPAddr).Port
+	if err := w.UpdateSettings(func(s *appsettings.Settings) { s.Managed.MixedPort = &busy }); err != nil {
+		t.Fatal(err)
+	}
+	err = w.Start(context.Background())
+	if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("mixed-port %d", busy)) || !strings.Contains(err.Error(), "pid") {
+		t.Fatalf("want busy-port error naming the owner, got %v", err)
+	}
+	if running, _ := w.Service().Running(context.Background()); running {
+		t.Fatal("core started despite the busy port")
+	}
+
+	// Switching a running core onto a taken port is reported too.
+	free := freePort(t)
+	if err := w.UpdateSettings(func(s *appsettings.Settings) { s.Managed.MixedPort = &free }); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer w.Stop(context.Background())
+	err = w.UpdateManaged(context.Background(), func(m *appsettings.Managed) { m.MixedPort = &busy })
+	if err == nil || !strings.Contains(err.Error(), "未能监听") {
+		t.Fatalf("want listen failure after reload, got %v", err)
+	}
+}

@@ -135,7 +135,7 @@ func (p *statusPanel) actions() []action {
 				return nil
 			}
 			p.checking = true
-			return checkExitIP(s.config.MixedPort)
+			return checkExitIP(s.config)
 		}},
 	)
 }
@@ -186,6 +186,11 @@ func (p *statusPanel) overview(w, h int) string {
 	}
 	row("出站模式", modeSwitcher(s.config.Mode)+styleDim.Render("   m 切换"))
 	row("端口", portSummary(s.config))
+	if s.ws != nil {
+		if want := s.ws.Settings().Managed.MixedPort; want != nil && *want > 0 && s.config.MixedPort != *want {
+			row("", styleBad.Render(fmt.Sprintf("混合端口 %d 未能监听（可能被其他程序占用），重启内核会显示占用者", *want)))
+		}
+	}
 	row("网络", fmt.Sprintf("局域网访问 %s · IPv6 %s · TUN %s · 日志 %s",
 		onOff(s.config.AllowLan), onOff(s.config.IPv6), onOff(s.config.Tun.Enable), s.config.LogLevel))
 	b.WriteString("\n")

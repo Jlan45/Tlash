@@ -11,6 +11,8 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+
+	"github.com/Jlan45/Tlash/internal/mihomoapi"
 )
 
 const exitIPService = "https://api.ip.sb/geoip"
@@ -67,15 +69,29 @@ func lookupExitIP(ctx context.Context, proxy *url.URL) exitIP {
 	return r
 }
 
-// checkExitIP compares the public IP seen directly and through the core's mixed port.
-func checkExitIP(mixedPort int) tea.Cmd {
+// exitProxy picks a local inbound to test through: mixed, then HTTP, then SOCKS.
+func exitProxy(c mihomoapi.Config) (*url.URL, error) {
+	host := func(p int) string { return fmt.Sprintf("127.0.0.1:%d", p) }
+	switch {
+	case c.MixedPort > 0:
+		return &url.URL{Scheme: "http", Host: host(c.MixedPort)}, nil
+	case c.Port > 0:
+		return &url.URL{Scheme: "http", Host: host(c.Port)}, nil
+	case c.SocksPort > 0:
+		return &url.URL{Scheme: "socks5", Host: host(c.SocksPort)}, nil
+	}
+	return nil, fmt.Errorf("内核没有监听任何代理端口（mixed-port / port / socks-port），可能被占用，见日志")
+}
+
+// checkExitIP compares the public IP seen directly and through the core.
+func checkExitIP(cfg mihomoapi.Config) tea.Cmd {
 	return func() tea.Msg {
 		ctx := context.Background()
 		var proxied exitIP
-		if mixedPort > 0 {
-			proxied = lookupExitIP(ctx, &url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", mixedPort)})
+		if proxy, err := exitProxy(cfg); err != nil {
+			proxied = exitIP{err: err}
 		} else {
-			proxied = exitIP{err: fmt.Errorf("内核没有开启 mixed-port")}
+			proxied = lookupExitIP(ctx, proxy)
 		}
 		return exitIPMsg{proxied: proxied, direct: lookupExitIP(ctx, nil)}
 	}

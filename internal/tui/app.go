@@ -538,7 +538,7 @@ func (a *App) render() string {
 	case a.help:
 		screen = overlay(screen, popupBox(a.renderHelp(), colorAccent), a.width, a.height)
 	}
-	return screen
+	return flagsToText(screen)
 }
 
 func joinColumns(left, right string) string {

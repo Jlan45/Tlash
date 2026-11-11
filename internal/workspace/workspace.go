@@ -216,6 +216,7 @@ func (w *Workspace) applyLocked(ctx context.Context) error {
 		if err := w.client.ReloadConfig(ctx, w.ConfigPath); err != nil {
 			return fmt.Errorf("配置已生成，但热重载失败: %w", err)
 		}
+		return w.verifyListeners(ctx, cfg)
 	}
 	return nil
 }
@@ -258,13 +259,23 @@ func (w *Workspace) Start(ctx context.Context) error {
 	if err := w.applyLocked(ctx); err != nil {
 		return err
 	}
+	cfg, err := os.ReadFile(w.ConfigPath)
+	if err != nil {
+		return err
+	}
+	if err := checkPortsFree(cfg); err != nil {
+		return err
+	}
 	if err := w.Service().Install(ctx); err != nil {
 		return fmt.Errorf("注册服务失败: %w", err)
 	}
 	if err := w.Service().Start(ctx); err != nil {
 		return fmt.Errorf("启动失败: %w", err)
 	}
-	return w.waitForAPI(ctx, 15*time.Second)
+	if err := w.waitForAPI(ctx, 15*time.Second); err != nil {
+		return err
+	}
+	return w.verifyListeners(ctx, cfg)
 }
 
 func (w *Workspace) Stop(ctx context.Context) error {
@@ -283,7 +294,14 @@ func (w *Workspace) Restart(ctx context.Context) error {
 	if err := w.Service().Restart(ctx); err != nil {
 		return err
 	}
-	return w.waitForAPI(ctx, 15*time.Second)
+	if err := w.waitForAPI(ctx, 15*time.Second); err != nil {
+		return err
+	}
+	cfg, err := os.ReadFile(w.ConfigPath)
+	if err != nil {
+		return nil
+	}
+	return w.verifyListeners(ctx, cfg)
 }
 
 func (w *Workspace) waitForAPI(ctx context.Context, timeout time.Duration) error {

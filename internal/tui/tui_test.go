@@ -341,3 +341,52 @@ func TestMainArrowsSwitchTabs(t *testing.T) {
 		t.Fatalf("tab went to %s", app.cur().title())
 	}
 }
+
+func TestExitProxyFallsBack(t *testing.T) {
+	for _, c := range []struct {
+		cfg  mihomoapi.Config
+		want string
+	}{
+		{mihomoapi.Config{MixedPort: 7890, Port: 8080}, "http://127.0.0.1:7890"},
+		{mihomoapi.Config{Port: 8080, SocksPort: 1080}, "http://127.0.0.1:8080"},
+		{mihomoapi.Config{SocksPort: 1080}, "socks5://127.0.0.1:1080"},
+	} {
+		u, err := exitProxy(c.cfg)
+		if err != nil || u.String() != c.want {
+			t.Errorf("exitProxy(%+v) = %v, %v; want %s", c.cfg, u, err, c.want)
+		}
+	}
+	if _, err := exitProxy(mihomoapi.Config{}); err == nil {
+		t.Error("want error when no inbound port is open")
+	}
+}
+
+func TestFlagsRenderAsLetters(t *testing.T) {
+	if got := flagsToText("赔钱机场-🇸🇬新加坡02 🇭🇰"); got != "赔钱机场-SG新加坡02 HK" {
+		t.Errorf("flagsToText = %q", got)
+	}
+	// Same cell width, so layouts computed on the original names still line up.
+	if a, b := ansi.StringWidth("🇸🇬新加坡"), ansi.StringWidth("SG新加坡"); a != b {
+		t.Errorf("width changed: %d vs %d", a, b)
+	}
+
+	// Node names reach mihomo untouched; only the screen is rewritten.
+	ep, _ := mihomoapi.ParseEndpoint("127.0.0.1:1")
+	app := New(Options{Client: mihomoapi.New(ep, ""), DelayTest: mihomoapi.DelayTest{URL: "http://x", Timeout: time.Second}})
+	defer app.Close()
+	app.Update(teaWindowSize(120, 30))
+	app.sess.connected = true
+	app.broadcast(proxiesMsg{proxies: map[string]mihomoapi.Proxy{
+		"GLOBAL":  {Name: "GLOBAL", Type: "Selector", All: []string{"选择"}},
+		"选择":      {Name: "选择", Type: "Selector", All: []string{"🇸🇬新加坡02"}, Now: "🇸🇬新加坡02"},
+		"🇸🇬新加坡02": {Name: "🇸🇬新加坡02", Type: "Vless"},
+	}})
+	press(app, "2")
+	out := screen(app)
+	if !strings.Contains(out, "SG新加坡02") || strings.ContainsRune(out, 0x1F1F8) {
+		t.Fatalf("flag not converted:\n%s", out)
+	}
+	if _, node, _ := app.panels[1].(*groupsPanel).currentNode(); node != "🇸🇬新加坡02" {
+		t.Fatalf("underlying node name changed: %q", node)
+	}
+}
