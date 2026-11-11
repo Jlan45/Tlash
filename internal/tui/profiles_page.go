@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -231,17 +230,7 @@ func (p *profilesPage) editMetaForm(cur profile.Profile) *inputForm {
 }
 
 func (p *profilesPage) openEditor(cur profile.Profile) tea.Cmd {
-	editor := os.Getenv("VISUAL")
-	if editor == "" {
-		editor = os.Getenv("EDITOR")
-	}
-	if editor == "" {
-		editor = "vi"
-	}
-	// $EDITOR may carry flags, e.g. "code --wait".
-	parts := strings.Fields(editor)
-	cmd := exec.Command(parts[0], append(parts[1:], p.sess.ws.Profiles.ContentPath(cur.ID))...)
-	return tea.ExecProcess(cmd, func(err error) tea.Msg { return editorDoneMsg{id: cur.ID, err: err} })
+	return openInEditor(p.sess.ws.Profiles.ContentPath(cur.ID), func(err error) tea.Msg { return editorDoneMsg{id: cur.ID, err: err} })
 }
 
 func expandHome(path string) string {

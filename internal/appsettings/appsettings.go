@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -27,6 +28,15 @@ type Settings struct {
 	Mirror        string  `yaml:"mirror"`
 	ActiveProfile string  `yaml:"active_profile"`
 	Managed       Managed `yaml:"managed"`
+	Tasks         Tasks   `yaml:"tasks"`
+}
+
+// Tasks configures the periodic `tlash task run-due` job.
+type Tasks struct {
+	Enabled bool `yaml:"enabled"`
+	// GeoUpdateInterval refreshes GEO databases this often; 0 disables.
+	GeoUpdateInterval time.Duration `yaml:"geo_update_interval,omitempty"`
+	LastGeoUpdate     time.Time     `yaml:"last_geo_update,omitempty"`
 }
 
 type CoreSettings struct {
@@ -50,6 +60,59 @@ type Managed struct {
 	// Unlike other fields it is always enforced, so profiles can't expose the API by accident.
 	ExternalController string `yaml:"external_controller"`
 	Secret             string `yaml:"secret"`
+	// DNS, when set, overrides these keys inside the profile's dns block (others are kept).
+	DNS *DNS `yaml:"dns,omitempty"`
+	// Sniffer, when set, replaces the profile's sniffer block.
+	Sniffer *Sniffer `yaml:"sniffer,omitempty"`
+	// ResourceMirror, when set, points geox-url and the dashboard download through this prefix.
+	ResourceMirror string `yaml:"resource_mirror,omitempty"`
+	// Dashboard is "", "metacubexd" or "zashboard"; served at /ui on the TCP controller.
+	Dashboard string `yaml:"dashboard,omitempty"`
+}
+
+type DNS struct {
+	Enable                bool     `yaml:"enable"`
+	Listen                string   `yaml:"listen,omitempty"`
+	EnhancedMode          string   `yaml:"enhanced_mode"`
+	FakeIPRange           string   `yaml:"fake_ip_range,omitempty"`
+	FakeIPFilter          []string `yaml:"fake_ip_filter,omitempty"`
+	DefaultNameserver     []string `yaml:"default_nameserver,omitempty"`
+	Nameserver            []string `yaml:"nameserver,omitempty"`
+	Fallback              []string `yaml:"fallback,omitempty"`
+	ProxyServerNameserver []string `yaml:"proxy_server_nameserver,omitempty"`
+}
+
+// DefaultDNS is a reasonable starting point for servers in mainland China.
+func DefaultDNS() *DNS {
+	return &DNS{
+		Enable:                true,
+		EnhancedMode:          "fake-ip",
+		FakeIPRange:           "198.18.0.1/16",
+		FakeIPFilter:          []string{"*.lan", "+.local", "+.msftconnecttest.com", "+.msftncsi.com"},
+		DefaultNameserver:     []string{"223.5.5.5", "119.29.29.29"},
+		Nameserver:            []string{"https://doh.pub/dns-query", "https://dns.alidns.com/dns-query"},
+		ProxyServerNameserver: []string{"https://doh.pub/dns-query"},
+	}
+}
+
+type Sniffer struct {
+	Enable              bool     `yaml:"enable"`
+	OverrideDestination bool     `yaml:"override_destination"`
+	HTTPPorts           []string `yaml:"http_ports,omitempty"`
+	TLSPorts            []string `yaml:"tls_ports,omitempty"`
+	QUICPorts           []string `yaml:"quic_ports,omitempty"`
+	ForceDomain         []string `yaml:"force_domain,omitempty"`
+	SkipDomain          []string `yaml:"skip_domain,omitempty"`
+}
+
+func DefaultSniffer() *Sniffer {
+	return &Sniffer{
+		Enable:     true,
+		HTTPPorts:  []string{"80", "8080-8880"},
+		TLSPorts:   []string{"443", "8443"},
+		QUICPorts:  []string{"443", "8443"},
+		SkipDomain: []string{"Mijia Cloud", "+.push.apple.com"},
+	}
 }
 
 func ptr[T any](v T) *T { return &v }

@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"slices"
 	"sync/atomic"
 
 	"github.com/Jlan45/Tlash/internal/appsettings"
@@ -103,5 +104,17 @@ func cloneManaged(m appsettings.Managed) appsettings.Managed {
 	m.MixedPort = clone(m.MixedPort)
 	m.AllowLan, m.IPv6, m.UnifiedDelay, m.TCPConcurrent = cloneB(m.AllowLan), cloneB(m.IPv6), cloneB(m.UnifiedDelay), cloneB(m.TCPConcurrent)
 	m.BindAddress, m.LogLevel, m.FindProcessMode = cloneS(m.BindAddress), cloneS(m.LogLevel), cloneS(m.FindProcessMode)
+	if m.DNS != nil {
+		d := *m.DNS
+		d.FakeIPFilter, d.DefaultNameserver, d.Nameserver = slices.Clone(d.FakeIPFilter), slices.Clone(d.DefaultNameserver), slices.Clone(d.Nameserver)
+		d.Fallback, d.ProxyServerNameserver = slices.Clone(d.Fallback), slices.Clone(d.ProxyServerNameserver)
+		m.DNS = &d
+	}
+	if m.Sniffer != nil {
+		sn := *m.Sniffer
+		sn.HTTPPorts, sn.TLSPorts, sn.QUICPorts = slices.Clone(sn.HTTPPorts), slices.Clone(sn.TLSPorts), slices.Clone(sn.QUICPorts)
+		sn.ForceDomain, sn.SkipDomain = slices.Clone(sn.ForceDomain), slices.Clone(sn.SkipDomain)
+		m.Sniffer = &sn
+	}
 	return m
 }

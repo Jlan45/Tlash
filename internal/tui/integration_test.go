@@ -57,7 +57,7 @@ func run(app *App, cmd tea.Cmd) {
 		for _, c := range m {
 			run(app, c)
 		}
-	case streamEventMsg, statusTickMsg, notifyExpireMsg, animTickMsg:
+	case streamEventMsg, statusTickMsg, notifyExpireMsg, animTickMsg, connTickMsg:
 		// Feed the event but don't re-arm the loop.
 		app.Update(m)
 	default:
@@ -99,7 +99,7 @@ func TestTUIAgainstRealMihomo(t *testing.T) {
 	}
 	press(app, "r")
 
-	press(app, "2")
+	press(app, pageIndex(t, app, "代理"))
 	out = screen(app)
 	t.Logf("proxies page:\n%s", out)
 	for _, want := range []string{"🚀 节点选择", "♻️ 自动选择", "香港 01", "Selector"} {
@@ -132,7 +132,7 @@ func TestTUIAgainstRealMihomo(t *testing.T) {
 	}
 	press(app, "esc")
 
-	press(app, "3")
+	press(app, pageIndex(t, app, "日志"))
 	app.Update(logMsg{at: time.Now(), entry: mihomoapi.LogEntry{Type: "warning", Payload: "[TCP] dial failed"}})
 	if out = screen(app); !strings.Contains(out, "WARN") || !strings.Contains(out, "dial failed") {
 		t.Fatalf("logs page:\n%s", out)

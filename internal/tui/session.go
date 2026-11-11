@@ -23,6 +23,8 @@ type session struct {
 	core coreState
 	// busy maps a job key to its status-bar text while it runs.
 	busy map[string]string
+	// activePage is the title of the page on screen, so pollers can stop when hidden.
+	activePage string
 
 	connected bool
 	lastErr   error

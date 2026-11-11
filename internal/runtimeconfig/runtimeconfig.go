@@ -18,8 +18,15 @@ import (
 
 const validateTimeout = 90 * time.Second
 
-// Generate overlays managed settings onto profile content, preserving the profile's key order and comments.
-func Generate(profile []byte, m appsettings.Managed, socketPath string) ([]byte, error) {
+// NamedOverride is override content plus a name for error messages.
+type NamedOverride struct {
+	Name    string
+	Content []byte
+}
+
+// Generate builds the runtime config: profile, then each override in order, then managed settings.
+// The profile's key order and comments are preserved.
+func Generate(profile []byte, overrides []NamedOverride, m appsettings.Managed, socketPath string) ([]byte, error) {
 	var doc yaml.Node
 	if err := yaml.Unmarshal(profile, &doc); err != nil {
 		return nil, fmt.Errorf("解析订阅配置失败: %w", err)
@@ -31,6 +38,21 @@ func Generate(profile []byte, m appsettings.Managed, socketPath string) ([]byte,
 	if root.Kind != yaml.MappingNode {
 		return nil, errors.New("订阅配置的顶层不是映射")
 	}
+	for _, o := range overrides {
+		var od yaml.Node
+		if err := yaml.Unmarshal(o.Content, &od); err != nil {
+			return nil, fmt.Errorf("覆写「%s」解析失败: %w", o.Name, err)
+		}
+		if len(od.Content) == 0 {
+			continue
+		}
+		if od.Content[0].Kind != yaml.MappingNode {
+			return nil, fmt.Errorf("覆写「%s」的顶层不是映射", o.Name)
+		}
+		if err := mergeOverride(root, od.Content[0], ""); err != nil {
+			return nil, fmt.Errorf("覆写「%s」: %w", o.Name, err)
+		}
+	}
 
 	setOpt(root, "mixed-port", m.MixedPort, intNode)
 	setOpt(root, "allow-lan", m.AllowLan, boolNode)
@@ -40,6 +62,23 @@ func Generate(profile []byte, m appsettings.Managed, socketPath string) ([]byte,
 	setOpt(root, "unified-delay", m.UnifiedDelay, boolNode)
 	setOpt(root, "tcp-concurrent", m.TCPConcurrent, boolNode)
 	setOpt(root, "find-process-mode", m.FindProcessMode, strNode)
+
+	if m.DNS != nil {
+		if err := applyDNS(root, m.DNS); err != nil {
+			return nil, err
+		}
+	}
+	if m.Sniffer != nil {
+		node, err := snifferNode(m.Sniffer)
+		if err != nil {
+			return nil, err
+		}
+		setKey(root, "sniffer", node)
+	}
+
+	if err := applyResources(root, m); err != nil {
+		return nil, err
+	}
 
 	// The control API is always Tlash's: a unix socket, plus TCP only when explicitly enabled.
 	setKey(root, "external-controller-unix", strNode(socketPath))

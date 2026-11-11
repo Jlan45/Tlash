@@ -208,3 +208,75 @@ func (c *Client) ReloadConfig(ctx context.Context, path string) error {
 	q.Set("force", "true")
 	return c.call(ctx, 30*time.Second, http.MethodPut, "/configs", q, map[string]string{"path": path, "payload": ""}, nil)
 }
+
+func (c *Client) CloseConnection(ctx context.Context, id string) error {
+	return c.call(ctx, defaultTimeout, http.MethodDelete, "/connections/"+url.PathEscape(id), nil, nil, nil)
+}
+
+func (c *Client) Rules(ctx context.Context) ([]Rule, error) {
+	var resp struct {
+		Rules []Rule `json:"rules"`
+	}
+	err := c.call(ctx, defaultTimeout, http.MethodGet, "/rules", nil, nil, &resp)
+	return resp.Rules, err
+}
+
+// SetRulesDisabled temporarily toggles rules by index; it resets when the config reloads.
+func (c *Client) SetRulesDisabled(ctx context.Context, states map[int]bool) error {
+	body := make(map[string]bool, len(states))
+	for i, v := range states {
+		body[strconv.Itoa(i)] = v
+	}
+	return c.call(ctx, defaultTimeout, http.MethodPatch, "/rules/disable", nil, body, nil)
+}
+
+func (c *Client) RuleProviders(ctx context.Context) (map[string]RuleProvider, error) {
+	var resp struct {
+		Providers map[string]RuleProvider `json:"providers"`
+	}
+	err := c.call(ctx, defaultTimeout, http.MethodGet, "/providers/rules", nil, nil, &resp)
+	return resp.Providers, err
+}
+
+func (c *Client) UpdateRuleProvider(ctx context.Context, name string) error {
+	return c.call(ctx, 2*time.Minute, http.MethodPut, "/providers/rules/"+url.PathEscape(name), nil, nil, nil)
+}
+
+func (c *Client) ProxyProviders(ctx context.Context) (map[string]ProxyProvider, error) {
+	var resp struct {
+		Providers map[string]ProxyProvider `json:"providers"`
+	}
+	err := c.call(ctx, defaultTimeout, http.MethodGet, "/providers/proxies", nil, nil, &resp)
+	return resp.Providers, err
+}
+
+func (c *Client) UpdateProxyProvider(ctx context.Context, name string) error {
+	return c.call(ctx, 2*time.Minute, http.MethodPut, "/providers/proxies/"+url.PathEscape(name), nil, nil, nil)
+}
+
+func (c *Client) DNSQuery(ctx context.Context, name, qtype string) (DNSResult, error) {
+	q := url.Values{}
+	q.Set("name", name)
+	q.Set("type", qtype)
+	var r DNSResult
+	err := c.call(ctx, defaultTimeout, http.MethodGet, "/dns/query", q, nil, &r)
+	return r, err
+}
+
+func (c *Client) FlushFakeIP(ctx context.Context) error {
+	return c.call(ctx, defaultTimeout, http.MethodPost, "/cache/fakeip/flush", nil, nil, nil)
+}
+
+func (c *Client) FlushDNS(ctx context.Context) error {
+	return c.call(ctx, defaultTimeout, http.MethodPost, "/cache/dns/flush", nil, nil, nil)
+}
+
+// UpgradeGeo makes the core re-download its GEO databases from the configured geox-url.
+func (c *Client) UpgradeGeo(ctx context.Context) error {
+	return c.call(ctx, 5*time.Minute, http.MethodPost, "/upgrade/geo", nil, map[string]string{"path": "", "payload": ""}, nil)
+}
+
+// UpgradeUI downloads the dashboard from external-ui-url into external-ui.
+func (c *Client) UpgradeUI(ctx context.Context) error {
+	return c.call(ctx, 5*time.Minute, http.MethodPost, "/upgrade/ui", nil, nil, nil)
+}

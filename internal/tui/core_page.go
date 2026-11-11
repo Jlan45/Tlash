@@ -3,7 +3,6 @@ package tui
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -17,58 +16,6 @@ import (
 type latestCoreMsg struct {
 	release corebinary.Release
 	err     error
-}
-
-// managedRow is one editable managed setting.
-type managedRow struct {
-	label   string
-	hint    string
-	options []string // enum values cycled with enter; nil means free-form or bool
-	isBool  bool
-	get     func(m appsettings.Managed) (value string, set bool)
-	set     func(m *appsettings.Managed, v string) error
-	clear   func(m *appsettings.Managed) // nil when the row can't fall back to the profile's value
-}
-
-func boolRow(label string, field func(*appsettings.Managed) **bool) managedRow {
-	return managedRow{
-		label:  label,
-		isBool: true,
-		get: func(m appsettings.Managed) (string, bool) {
-			if v := *field(&m); v != nil {
-				return boolLabel(*v), true
-			}
-			return "", false
-		},
-		set: func(m *appsettings.Managed, v string) error {
-			b := v == "是"
-			*field(m) = &b
-			return nil
-		},
-		clear: func(m *appsettings.Managed) { *field(m) = nil },
-	}
-}
-
-func stringRow(label, hint string, options []string, field func(*appsettings.Managed) **string) managedRow {
-	return managedRow{
-		label:   label,
-		hint:    hint,
-		options: options,
-		get: func(m appsettings.Managed) (string, bool) {
-			if v := *field(&m); v != nil {
-				return *v, true
-			}
-			return "", false
-		},
-		set: func(m *appsettings.Managed, v string) error {
-			if options != nil && !slices.Contains(options, v) {
-				return fmt.Errorf("可选值: %s", strings.Join(options, " / "))
-			}
-			*field(m) = &v
-			return nil
-		},
-		clear: func(m *appsettings.Managed) { *field(m) = nil },
-	}
 }
 
 var managedRows = []managedRow{
@@ -204,13 +151,13 @@ func (p *corePage) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 	case "down", "j":
 		p.cursor = min(p.cursor+1, len(managedRows)-1)
 	case "enter":
-		return p.editRow(managedRows[p.cursor])
+		return editManaged(p.sess, managedRows[p.cursor], func(f *inputForm) { p.form = f })
 	case "x":
 		row := managedRows[p.cursor]
 		if row.clear == nil {
 			return notify(row.label + " 始终由 Tlash 接管")
 		}
-		return p.applyManaged(row.label+" 改为使用订阅自带值", row.clear)
+		return applyManaged(p.sess, row.label+" 改为使用订阅自带值", row.clear)
 	case "D":
 		if p.checking {
 			return nil
@@ -309,42 +256,6 @@ func (p *corePage) confirmDownload() tea.Cmd {
 	})
 }
 
-func (p *corePage) editRow(row managedRow) tea.Cmd {
-	m := p.sess.ws.Settings().Managed
-	cur, set := row.get(m)
-	switch {
-	case row.isBool:
-		next := "是"
-		if set && cur == "是" {
-			next = "否"
-		}
-		return p.applyManaged(row.label+" → "+next, func(m *appsettings.Managed) { _ = row.set(m, next) })
-	case row.options != nil:
-		idx := slices.Index(row.options, cur)
-		next := row.options[(idx+1)%len(row.options)]
-		return p.applyManaged(row.label+" → "+next, func(m *appsettings.Managed) { _ = row.set(m, next) })
-	}
-	if cur == "关闭" {
-		cur = ""
-	}
-	p.form = newInputForm(row.label, func(v []string) tea.Cmd {
-		var probe appsettings.Managed
-		if err := row.set(&probe, v[0]); err != nil {
-			return notifyErr(row.label, err)
-		}
-		return p.applyManaged(row.label+" 已更新", func(m *appsettings.Managed) { _ = row.set(m, v[0]) })
-	}).addText(row.label, cur, "", row.hint)
-	return nil
-}
-
-// applyManaged saves a managed-setting change and hot-reloads it into the running core.
-func (p *corePage) applyManaged(okText string, fn func(*appsettings.Managed)) tea.Cmd {
-	ws := p.sess.ws
-	return p.sess.job("core-config", "应用设置", func(ctx context.Context) (string, error) {
-		return okText, ws.UpdateManaged(ctx, fn)
-	}, p.sess.refreshAll())
-}
-
 func channelLabel(c appsettings.CoreChannel) string {
 	if c == appsettings.ChannelAlpha {
 		return "预览版（Alpha）"
@@ -398,20 +309,6 @@ func (p *corePage) view(w, h int) string {
 	row("内核日志", s.core.logHint)
 
 	b.WriteString("\n" + styleTitle.Render("接管设置") + styleDim.Render("  覆盖订阅中的同名项 · enter 修改 · x 改用订阅值") + "\n")
-	labelW := 14
-	for i, r := range managedRows {
-		val, set := r.get(settings.Managed)
-		if !set {
-			val = styleDim.Render("使用订阅值")
-		}
-		line := "  " + padRight(r.label, labelW) + val
-		if i == p.cursor {
-			line = styleSelected.Render(padRight("▸ "+r.label, labelW+2)) + val
-			if r.hint != "" {
-				line += styleDim.Render("  " + r.hint)
-			}
-		}
-		b.WriteString(line + "\n")
-	}
+	b.WriteString(renderManagedRows(managedRows, settings.Managed, p.cursor, 14))
 	return b.String()
 }

@@ -75,18 +75,22 @@ func New(opts Options) *App {
 		logLevel = "info"
 	}
 	a := &App{sess: sess, streams: streams, logs: newLogsPage(sess, streams, logLevel)}
-	a.pages = []page{newOverviewPage(sess), newProxiesPage(sess)}
 	if sess.ws != nil {
-		a.pages = append(a.pages, newProfilesPage(sess))
-	}
-	a.pages = append(a.pages, a.logs)
-	if sess.ws != nil {
-		a.pages = append(a.pages, newCorePage(sess))
+		a.pages = []page{
+			newOverviewPage(sess), newProxiesPage(sess), newProfilesPage(sess), newOverridesPage(sess),
+			newConnectionsPage(sess), newRulesPage(sess), a.logs, newCorePage(sess), newNetworkPage(sess), newSettingsPage(sess),
+		}
+	} else {
+		// External core: Tlash doesn't own its config, so only runtime views.
+		a.pages = []page{
+			newOverviewPage(sess), newProxiesPage(sess), newConnectionsPage(sess), newRulesPage(sess), a.logs, newNetworkPage(sess),
+		}
 	}
 	return a
 }
 
 func (a *App) Init() tea.Cmd {
+	a.sess.activePage = a.pages[a.active].title()
 	a.streams.start(a.logs.level)
 	return tea.Batch(a.sess.refreshAll(), statusTick(), a.streams.next(), a.pages[a.active].activate())
 }
@@ -226,8 +230,12 @@ func (a *App) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 	case "shift+tab":
 		return a.switchTo((a.active + len(a.pages) - 1) % len(a.pages))
 	}
-	if len(key) == 1 && key[0] >= '1' && key[0] <= '9' {
-		if idx := int(key[0] - '1'); idx < len(a.pages) {
+	if len(key) == 1 && key[0] >= '0' && key[0] <= '9' {
+		idx := int(key[0] - '1')
+		if key[0] == '0' {
+			idx = 9
+		}
+		if idx < len(a.pages) {
 			return a.switchTo(idx)
 		}
 	}
@@ -240,6 +248,7 @@ func (a *App) switchTo(idx int) tea.Cmd {
 	}
 	a.active = idx
 	a.showHelp = false
+	a.sess.activePage = a.pages[idx].title()
 	return a.pages[idx].activate()
 }
 
@@ -302,9 +311,10 @@ func (a *App) render() string {
 func (a *App) renderSidebar(w, h int) string {
 	lines := []string{styleTitle.Render(ansi.Truncate("Tlash", w-1, "")), ""}
 	for i, p := range a.pages {
-		label := fmt.Sprintf("%d %s", i+1, p.title())
+		num := (i + 1) % 10
+		label := fmt.Sprintf("%d %s", num, p.title())
 		if w < 8 {
-			label = fmt.Sprintf(" %d", i+1)
+			label = fmt.Sprintf(" %d", num)
 		}
 		label = padRight(label, w-1)
 		if i == a.active {
@@ -373,7 +383,7 @@ func (a *App) renderHelp(w, h int) string {
 	add(a.pages[a.active].hints())
 	lines = append(lines, "", styleTitle.Render("全局"), "")
 	add([]hint{
-		{"1-9", "切换页面"},
+		{"1-9, 0", "切换页面"},
 		{"tab / shift+tab", "下一页 / 上一页"},
 		{"鼠标", "点击侧栏切页，滚轮滚动"},
 		{"?", "显示 / 关闭帮助"},

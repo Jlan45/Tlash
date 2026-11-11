@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -28,8 +27,7 @@ type logsPage struct {
 	// scroll is how many wrapped lines the view sits above the bottom; 0 follows new logs.
 	scroll int
 
-	filter    textinput.Model
-	filtering bool
+	filter filterInput
 
 	// Wrapped-line cache, rebuilt when the buffer, filter or width changes.
 	cacheKey   string
@@ -37,13 +35,12 @@ type logsPage struct {
 }
 
 func newLogsPage(sess *session, streams *coreStreams, level string) *logsPage {
-	ti := newTextInput("/ ", "过滤日志")
-	return &logsPage{sess: sess, streams: streams, level: level, buf: newLogBuffer(logBufferLimit), filter: ti}
+	return &logsPage{sess: sess, streams: streams, level: level, buf: newLogBuffer(logBufferLimit), filter: newFilterInput("过滤日志")}
 }
 
 func (p *logsPage) title() string        { return "日志" }
 func (p *logsPage) activate() tea.Cmd    { return nil }
-func (p *logsPage) capturingInput() bool { return p.filtering }
+func (p *logsPage) capturingInput() bool { return p.filter.active }
 
 func (p *logsPage) hints() []hint {
 	pause := "暂停"
@@ -71,7 +68,7 @@ func (p *logsPage) update(msg tea.Msg) tea.Cmd {
 		}
 		return nil
 	case tea.KeyPressMsg:
-		if p.filtering {
+		if p.filter.active {
 			return p.updateFilter(msg)
 		}
 		return p.handleKey(msg)
@@ -88,20 +85,8 @@ func appendCappedLogs(xs []logMsg, e logMsg, limit int) []logMsg {
 }
 
 func (p *logsPage) updateFilter(msg tea.KeyPressMsg) tea.Cmd {
-	switch msg.String() {
-	case "esc":
-		p.filter.SetValue("")
-		fallthrough
-	case "enter":
-		p.filtering = false
-		p.filter.Blur()
-		p.scroll = 0
-		return nil
-	}
-	var cmd tea.Cmd
-	p.filter, cmd = p.filter.Update(msg)
 	p.scroll = 0
-	return cmd
+	return p.filter.update(msg)
 }
 
 func (p *logsPage) handleKey(msg tea.KeyPressMsg) tea.Cmd {
@@ -131,10 +116,9 @@ func (p *logsPage) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 		p.streams.setLogLevel(p.level)
 		return notify("日志级别：" + p.level + "（仅影响之后的日志）")
 	case "/":
-		p.filtering = true
-		return p.filter.Focus()
+		return p.filter.start()
 	case "esc":
-		p.filter.SetValue("")
+		p.filter.clear()
 	case "c":
 		p.buf.clear()
 		p.pending = nil
@@ -156,7 +140,7 @@ func nextLogLevel(cur string) string {
 }
 
 func (p *logsPage) export() tea.Cmd {
-	entries := append([]logMsg(nil), p.buf.matching(p.filter.Value())...)
+	entries := append([]logMsg(nil), p.buf.matching(p.filter.value())...)
 	return func() tea.Msg {
 		name := "tlash-logs-" + time.Now().Format("20060102-150405") + ".log"
 		var b strings.Builder
@@ -172,7 +156,7 @@ func (p *logsPage) export() tea.Cmd {
 }
 
 func (p *logsPage) wrappedLines(w int) []string {
-	key := fmt.Sprintf("%d|%d|%s", p.buf.seq, w, p.filter.Value())
+	key := fmt.Sprintf("%d|%d|%s", p.buf.seq, w, p.filter.value())
 	if key == p.cacheKey {
 		return p.cacheLines
 	}
@@ -180,7 +164,7 @@ func (p *logsPage) wrappedLines(w int) []string {
 	indent := strings.Repeat(" ", prefixW)
 	bodyW := max(w-prefixW, 10)
 	lines := p.cacheLines[:0]
-	for _, e := range p.buf.matching(p.filter.Value()) {
+	for _, e := range p.buf.matching(p.filter.value()) {
 		prefix := styleDim.Render(e.at.Format("15:04:05")) + " " + levelStyle(e.entry.Type).Render(padRight(levelLabel(e.entry.Type), 8))
 		for i, part := range strings.Split(ansi.Hardwrap(e.entry.Payload, bodyW, true), "\n") {
 			if i == 0 {
@@ -199,15 +183,7 @@ func (p *logsPage) view(w, h int) string {
 	if p.paused {
 		header += styleWarn.Render(fmt.Sprintf("  已暂停，%d 条新日志", len(p.pending)))
 	}
-	switch {
-	case p.filtering:
-		p.filter.SetWidth(max(w-4, 10))
-		header += "\n" + p.filter.View()
-	case p.filter.Value() != "":
-		header += "\n" + styleAccent.Render("过滤: "+p.filter.Value()) + styleDim.Render("  (esc 清除)")
-	default:
-		header += "\n"
-	}
+	header += "\n" + p.filter.line(w)
 
 	lines := p.wrappedLines(w)
 	listH := h - 3

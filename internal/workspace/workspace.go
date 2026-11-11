@@ -17,6 +17,7 @@ import (
 	"github.com/Jlan45/Tlash/internal/corebinary"
 	"github.com/Jlan45/Tlash/internal/coreservice"
 	"github.com/Jlan45/Tlash/internal/mihomoapi"
+	"github.com/Jlan45/Tlash/internal/override"
 	"github.com/Jlan45/Tlash/internal/profile"
 	"github.com/Jlan45/Tlash/internal/runtimeconfig"
 )
@@ -31,6 +32,7 @@ type Workspace struct {
 	SocketPath string
 	Core       corebinary.Paths
 	Profiles   *profile.Store
+	Overrides  *override.Store
 
 	// opMu serializes multi-step operations; mu guards settings/service and is held only briefly,
 	// so the UI can read settings while a slow operation (validation, startup) runs.
@@ -70,10 +72,11 @@ func Open(dir string) (*Workspace, error) {
 		RuntimeDir: filepath.Join(dir, "runtime"),
 		Core:       corebinary.PathsIn(filepath.Join(dir, "core")),
 		Profiles:   profile.NewStore(filepath.Join(dir, "profiles")),
+		Overrides:  override.NewStore(filepath.Join(dir, "overrides")),
 	}
 	w.ConfigPath = filepath.Join(w.RuntimeDir, "config.yaml")
 	w.SocketPath = filepath.Join(w.RuntimeDir, "mihomo.sock")
-	for _, sub := range []string{"", "runtime", "core", "profiles", "backups"} {
+	for _, sub := range []string{"", "runtime", "core", "profiles", "overrides", "backups"} {
 		if err := os.MkdirAll(filepath.Join(dir, sub), 0o700); err != nil {
 			return nil, fmt.Errorf("创建目录失败: %w", err)
 		}
@@ -157,17 +160,37 @@ func (w *Workspace) Apply(ctx context.Context) error {
 	return w.applyLocked(ctx)
 }
 
-func (w *Workspace) applyLocked(ctx context.Context) error {
+// Generate builds the runtime config for the current settings without writing or applying it.
+func (w *Workspace) Generate() ([]byte, error) {
 	settings := w.Settings()
 	content := []byte(runtimeconfig.MinimalProfile)
 	if id := settings.ActiveProfile; id != "" {
 		b, err := w.Profiles.ReadContent(id)
 		if err != nil {
-			return fmt.Errorf("读取订阅失败: %w", err)
+			return nil, fmt.Errorf("读取订阅失败: %w", err)
 		}
 		content = b
 	}
-	cfg, err := runtimeconfig.Generate(content, settings.Managed, w.SocketPath)
+	overrides, err := w.Overrides.List()
+	if err != nil {
+		return nil, err
+	}
+	var named []runtimeconfig.NamedOverride
+	for _, o := range overrides {
+		if !o.AppliesTo(settings.ActiveProfile) {
+			continue
+		}
+		b, err := w.Overrides.ReadContent(o.ID)
+		if err != nil {
+			return nil, fmt.Errorf("读取覆写「%s」失败: %w", o.Name, err)
+		}
+		named = append(named, runtimeconfig.NamedOverride{Name: o.Name, Content: b})
+	}
+	return runtimeconfig.Generate(content, named, settings.Managed, w.SocketPath)
+}
+
+func (w *Workspace) applyLocked(ctx context.Context) error {
+	cfg, err := w.Generate()
 	if err != nil {
 		return err
 	}

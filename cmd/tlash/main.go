@@ -59,6 +59,47 @@ func newRootCmd() *cobra.Command {
 				buildinfo.Version, buildinfo.Commit, buildinfo.Date, runtime.GOOS, runtime.GOARCH)
 		},
 	})
+	cmd.AddCommand(newTaskCmd(f), newEnvCmd(f))
+	return cmd
+}
+
+func newTaskCmd(f *rootFlags) *cobra.Command {
+	task := &cobra.Command{Use: "task", Short: "定时任务"}
+	task.AddCommand(&cobra.Command{
+		Use:   "run-due",
+		Short: "执行到期的任务（订阅更新、GEO 更新），由 systemd timer 或 cron 调用",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			ws, err := workspace.Open(f.dir)
+			if err != nil {
+				return err
+			}
+			return ws.RunDue(cmd.Context(), time.Now())
+		},
+	})
+	return task
+}
+
+func newEnvCmd(f *rootFlags) *cobra.Command {
+	var unset bool
+	cmd := &cobra.Command{
+		Use:   "env",
+		Short: `输出代理环境变量，用法：eval "$(tlash env)"`,
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			ws, err := workspace.Open(f.dir)
+			if err != nil {
+				return err
+			}
+			out, err := ws.ProxyEnv(unset)
+			if err != nil {
+				return err
+			}
+			fmt.Fprint(cmd.OutOrStdout(), out)
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&unset, "unset", false, "输出取消代理变量的命令")
 	return cmd
 }
 

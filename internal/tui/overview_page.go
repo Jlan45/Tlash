@@ -10,7 +10,11 @@ import (
 	"github.com/Jlan45/Tlash/internal/mihomoapi"
 )
 
-type overviewPage struct{ sess *session }
+type overviewPage struct {
+	sess     *session
+	exitIP   *exitIPMsg
+	checking bool
+}
 
 func newOverviewPage(sess *session) *overviewPage { return &overviewPage{sess: sess} }
 
@@ -29,10 +33,15 @@ func (p *overviewPage) hints() []hint {
 		{"d", "直连模式"},
 		{"R", "重启内核"},
 		{"X", "关闭所有连接"},
+		{"i", "检测出口 IP"},
 	}...)
 }
 
 func (p *overviewPage) update(msg tea.Msg) tea.Cmd {
+	if m, ok := msg.(exitIPMsg); ok {
+		p.exitIP, p.checking = &m, false
+		return nil
+	}
 	key, ok := msg.(tea.KeyPressMsg)
 	if !ok {
 		return nil
@@ -54,6 +63,12 @@ func (p *overviewPage) update(msg tea.Msg) tea.Cmd {
 	c := p.sess.client
 	refresh := fetchStatus(c)
 	switch key.String() {
+	case "i":
+		if p.checking {
+			return nil
+		}
+		p.checking = true
+		return checkExitIP(p.sess.config.MixedPort)
 	case "r", "g", "d":
 		mode := map[string]string{"r": "rule", "g": "global", "d": "direct"}[key.String()]
 		if mode == p.sess.config.Mode {
@@ -118,6 +133,15 @@ func (p *overviewPage) view(w, h int) string {
 	row("累计流量", "↓ "+padRight(formatBytes(s.traffic.DownTotal), 12)+"↑ "+formatBytes(s.traffic.UpTotal))
 	row("内存", formatBytes(s.memory))
 	row("活动连接", fmt.Sprintf("%d", s.connCount))
+	switch {
+	case p.checking:
+		row("出口 IP", styleDim.Render("检测中…"))
+	case p.exitIP != nil:
+		row("出口 IP", "代理 "+p.exitIP.proxied.label())
+		row("", styleDim.Render("直连 ")+p.exitIP.direct.label())
+	default:
+		row("出口 IP", styleDim.Render("按 i 检测（经 "+exitIPService+"）"))
+	}
 
 	// Graphs use whatever vertical space remains.
 	used := strings.Count(b.String(), "\n")

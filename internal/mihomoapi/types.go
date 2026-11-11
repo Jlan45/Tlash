@@ -84,6 +84,8 @@ type ConnectionMetadata struct {
 	Host            string `json:"host"`
 	Process         string `json:"process"`
 	SniffHost       string `json:"sniffHost"`
+	InboundName     string `json:"inboundName"`
+	RemoteDest      string `json:"remoteDestination"`
 }
 
 type Connection struct {
@@ -93,6 +95,7 @@ type Connection struct {
 	Download    int64              `json:"download"`
 	Start       time.Time          `json:"start"`
 	Chains      []string           `json:"chains"`
+	Providers   []string           `json:"providerChains"`
 	Rule        string             `json:"rule"`
 	RulePayload string             `json:"rulePayload"`
 }
@@ -102,4 +105,55 @@ type ConnectionsSnapshot struct {
 	UploadTotal   int64        `json:"uploadTotal"`
 	Memory        int64        `json:"memory"`
 	Connections   []Connection `json:"connections"`
+}
+
+type RuleExtra struct {
+	Disabled  bool      `json:"disabled"`
+	HitCount  int64     `json:"hitCount"`
+	HitAt     time.Time `json:"hitAt"`
+	MissCount int64     `json:"missCount"`
+}
+
+type Rule struct {
+	Index   int    `json:"index"`
+	Type    string `json:"type"`
+	Payload string `json:"payload"`
+	Proxy   string `json:"proxy"`
+	Size    int    `json:"size"`
+	// Extra is nil on cores too old to report hit stats or support disabling.
+	Extra *RuleExtra `json:"extra"`
+}
+
+type RuleProvider struct {
+	Name        string    `json:"name"`
+	Behavior    string    `json:"behavior"`
+	Format      string    `json:"format"`
+	RuleCount   int       `json:"ruleCount"`
+	VehicleType string    `json:"vehicleType"`
+	UpdatedAt   time.Time `json:"updatedAt"`
+}
+
+type ProxyProvider struct {
+	Name             string    `json:"name"`
+	VehicleType      string    `json:"vehicleType"`
+	Proxies          []Proxy   `json:"proxies"`
+	UpdatedAt        time.Time `json:"updatedAt"`
+	SubscriptionInfo *struct {
+		Upload   int64 `json:"Upload"`
+		Download int64 `json:"Download"`
+		Total    int64 `json:"Total"`
+		Expire   int64 `json:"Expire"`
+	} `json:"subscriptionInfo"`
+}
+
+type DNSAnswer struct {
+	Name string `json:"name"`
+	Type int    `json:"type"`
+	TTL  int    `json:"TTL"`
+	Data string `json:"data"`
+}
+
+type DNSResult struct {
+	Status int         `json:"Status"`
+	Answer []DNSAnswer `json:"Answer"`
 }

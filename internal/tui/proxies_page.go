@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 
-	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
@@ -45,17 +44,15 @@ type proxiesPage struct {
 	testing   map[string]bool
 	ticks     int
 
-	filter    textinput.Model
-	filtering bool
+	filter filterInput
 }
 
 func newProxiesPage(sess *session) *proxiesPage {
-	ti := newTextInput("/ ", "过滤节点名")
-	return &proxiesPage{sess: sess, collapsed: map[string]bool{}, testing: map[string]bool{}, filter: ti}
+	return &proxiesPage{sess: sess, collapsed: map[string]bool{}, testing: map[string]bool{}, filter: newFilterInput("过滤节点名")}
 }
 
 func (p *proxiesPage) title() string        { return "代理" }
-func (p *proxiesPage) capturingInput() bool { return p.filtering }
+func (p *proxiesPage) capturingInput() bool { return p.filter.active }
 
 func (p *proxiesPage) activate() tea.Cmd {
 	p.ticks = 0
@@ -72,6 +69,7 @@ func (p *proxiesPage) hints() []hint {
 		{"e", "全部展开 / 收起"},
 		{"u", "取消固定（URLTest/Fallback）"},
 		{"r", "刷新"},
+		{"P", "更新全部代理集（proxy-providers）"},
 	}
 }
 
@@ -105,7 +103,7 @@ func (p *proxiesPage) update(msg tea.Msg) tea.Cmd {
 		}
 		return nil
 	case tea.KeyPressMsg:
-		if p.filtering {
+		if p.filter.active {
 			return p.updateFilter(msg)
 		}
 		return p.handleKey(msg)
@@ -114,18 +112,7 @@ func (p *proxiesPage) update(msg tea.Msg) tea.Cmd {
 }
 
 func (p *proxiesPage) updateFilter(msg tea.KeyPressMsg) tea.Cmd {
-	switch msg.String() {
-	case "esc":
-		p.filter.SetValue("")
-		fallthrough
-	case "enter":
-		p.filtering = false
-		p.filter.Blur()
-		p.rebuild()
-		return nil
-	}
-	var cmd tea.Cmd
-	p.filter, cmd = p.filter.Update(msg)
+	cmd := p.filter.update(msg)
 	p.rebuild()
 	return cmd
 }
@@ -145,11 +132,10 @@ func (p *proxiesPage) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 	case "end", "G":
 		p.move(len(p.rows))
 	case "/":
-		p.filtering = true
-		return p.filter.Focus()
+		return p.filter.start()
 	case "esc":
-		if p.filter.Value() != "" {
-			p.filter.SetValue("")
+		if p.filter.value() != "" {
+			p.filter.clear()
 			p.rebuild()
 		}
 	case "s":
@@ -158,6 +144,8 @@ func (p *proxiesPage) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 		return notify("排序：" + p.sort.label())
 	case "r":
 		return p.fetch()
+	case "P":
+		return p.updateProviders()
 	case "e":
 		p.toggleAll()
 	case "left", "h":
@@ -208,7 +196,7 @@ func (p *proxiesPage) visibleGroups() []mihomoapi.Proxy {
 // rebuild recomputes rows, keeping the cursor on the same row when it still exists.
 func (p *proxiesPage) rebuild() {
 	prev, hadPrev := p.current()
-	filter := p.filter.Value()
+	filter := p.filter.value()
 	p.rows = p.rows[:0]
 	for _, g := range p.visibleGroups() {
 		members := sortedMembers(g, p.proxies, p.sort, filter)
@@ -333,14 +321,7 @@ func (p *proxiesPage) unfixCurrent() tea.Cmd {
 
 func (p *proxiesPage) view(w, h int) string {
 	header := styleTitle.Render("代理组") + styleDim.Render("  排序："+p.sort.label())
-	if p.filtering {
-		p.filter.SetWidth(max(w-4, 10))
-		header += "\n" + p.filter.View()
-	} else if v := p.filter.Value(); v != "" {
-		header += "\n" + styleAccent.Render("过滤: "+v) + styleDim.Render("  (esc 清除)")
-	} else {
-		header += "\n"
-	}
+	header += "\n" + p.filter.line(w)
 	listH := h - 3
 	if !p.loaded {
 		if p.loadErr != nil {
@@ -385,7 +366,7 @@ func (p *proxiesPage) renderRow(row proxyRow, nameW int) string {
 	if row.member == "" {
 		g := p.proxies[row.group]
 		arrow := "▼"
-		if p.collapsed[row.group] && p.filter.Value() == "" {
+		if p.collapsed[row.group] && p.filter.value() == "" {
 			arrow = "▶"
 		}
 		line := arrow + " " + styleBold.Render(g.Name) + "  " + styleDim.Render(g.Type) + "  → " + styleAccent.Render(g.Now)
@@ -422,4 +403,29 @@ func (p *proxiesPage) renderRow(row proxyRow, nameW int) string {
 		delay = delayStyle(d).Render(fmt.Sprintf("%dms", d))
 	}
 	return "    " + mark + " " + name + " " + styleDim.Render(kind+" "+udp) + "  " + delay
+}
+
+func (p *proxiesPage) updateProviders() tea.Cmd {
+	c := p.sess.client
+	return p.sess.job("proxy-providers", "更新代理集", func(ctx context.Context) (string, error) {
+		provs, err := c.ProxyProviders(ctx)
+		if err != nil {
+			return "", err
+		}
+		n := 0
+		for name, pr := range provs {
+			// "default" and inline providers have nothing to fetch.
+			if pr.VehicleType != "HTTP" && pr.VehicleType != "File" {
+				continue
+			}
+			if err := c.UpdateProxyProvider(ctx, name); err != nil {
+				return "", fmt.Errorf("%s: %w", name, err)
+			}
+			n++
+		}
+		if n == 0 {
+			return "没有需要更新的代理集", nil
+		}
+		return fmt.Sprintf("已更新 %d 个代理集", n), nil
+	}, p.fetch())
 }
