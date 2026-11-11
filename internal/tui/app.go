@@ -593,7 +593,15 @@ func (a *App) renderSide(w, h int, onlyFocused bool) string {
 		rowsByPanel[i] = p.rows(w - 2)
 		counts[i] = len(rowsByPanel[i])
 	}
-	heights := a.sideHeights(h, counts, onlyFocused)
+	// The rate box stays pinned under the panels; it shrinks to one line on short terminals.
+	rateH := 0
+	switch {
+	case h >= 20:
+		rateH = 4
+	case h >= 14:
+		rateH = 3
+	}
+	heights := a.sideHeights(h-rateH, counts, onlyFocused)
 	a.geoms = make([]panelGeom, len(a.panels))
 	var boxes []string
 	y := 0
@@ -634,7 +642,31 @@ func (a *App) renderSide(w, h int, onlyFocused bool) string {
 		boxes = append(boxes, drawBox(a.panelTitle(i, p), body, w, hh, focused))
 		y += hh
 	}
-	return fitBlock(strings.Join(boxes, "\n"), w, h)
+	side := fitBlock(strings.Join(boxes, "\n"), w, h-rateH)
+	if rateH > 0 {
+		side += "\n" + a.renderRateBox(w, rateH)
+	}
+	return side
+}
+
+// renderRateBox is the always-visible traffic summary at the bottom of the left column.
+func (a *App) renderRateBox(w, h int) string {
+	s := a.sess
+	inner := w - 2
+	var body []string
+	switch {
+	case !s.connected:
+		body = []string{styleDim.Render("未连接到内核")}
+	case h >= 4:
+		graphW := max(inner-13, 0)
+		body = []string{
+			styleOK.Render("↓ "+padLeft(formatSpeed(s.traffic.Down), 10)) + " " + styleOK.Render(sparkline(s.downHistory, graphW)),
+			styleAccent.Render("↑ "+padLeft(formatSpeed(s.traffic.Up), 10)) + " " + styleAccent.Render(sparkline(s.upHistory, graphW)),
+		}
+	default:
+		body = []string{styleOK.Render("↓ "+formatSpeed(s.traffic.Down)) + "  " + styleAccent.Render("↑ "+formatSpeed(s.traffic.Up))}
+	}
+	return drawBox(styleDim.Render("速率"), body, w, h, false)
 }
 
 func (a *App) renderMain(w, h int) string {

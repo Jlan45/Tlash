@@ -267,3 +267,39 @@ func TestSideCursorCrossesPanels(t *testing.T) {
 		t.Fatalf("down at bottom moved to %s", title())
 	}
 }
+
+// The rate box stays at the bottom-left whatever is focused.
+func TestRateBoxPinnedBottomLeft(t *testing.T) {
+	ep, _ := mihomoapi.ParseEndpoint("127.0.0.1:1")
+	app := New(Options{Client: mihomoapi.New(ep, ""), DelayTest: mihomoapi.DelayTest{URL: "http://x", Timeout: time.Second}})
+	defer app.Close()
+	app.sess.connected = true
+	for _, v := range []int64{0, 1 << 20, 3 << 20, 8 << 20} {
+		app.sess.recordTraffic(mihomoapi.Traffic{Down: v, Up: v / 8})
+	}
+	for _, h := range []int{30, 16, 12} {
+		app.Update(teaWindowSize(120, h))
+		for _, focus := range []string{"1", "2", "5"} {
+			press(app, focus)
+			lines := strings.Split(screen(app), "\n")
+			for i := range lines {
+				lines[i] = ansi.Truncate(lines[i], app.sideW, "") // left column only
+			}
+			// Bottom border of the rate box sits right above the status bar.
+			bottom := lines[len(lines)-2]
+			box := strings.Join(lines[max(len(lines)-6, 0):len(lines)-1], "\n")
+			if h >= 14 && (!strings.HasPrefix(bottom, "╰") || !strings.Contains(box, "速率") || !strings.Contains(box, "8.0 MB/s")) {
+				t.Fatalf("h=%d focus=%s: rate box missing:\n%s", h, focus, strings.Join(lines, "\n"))
+			}
+			if h < 14 && strings.Contains(box, "速率") {
+				t.Fatalf("h=%d: rate box should be hidden on very short terminals", h)
+			}
+		}
+	}
+	// Main-panel fullscreen hides it.
+	app.Update(teaWindowSize(120, 30))
+	app.mode, app.inMain = modeFull, true
+	if strings.Contains(screen(app), "速率") {
+		t.Fatal("rate box shown in main fullscreen")
+	}
+}

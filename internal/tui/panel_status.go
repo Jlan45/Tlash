@@ -61,7 +61,7 @@ func (p *statusPanel) rows(w int) []string {
 		}
 	}
 	if s.connected {
-		summary += fmt.Sprintf(" · ↓%s", formatSpeed(s.traffic.Down))
+		summary += fmt.Sprintf(" · %d 连接", s.connCount)
 	}
 	return []string{state, styleDim.Render(summary)}
 }
