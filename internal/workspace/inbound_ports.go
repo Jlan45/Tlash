@@ -60,7 +60,9 @@ type StaleCoreError struct {
 
 func (e *StaleCoreError) Error() string { return e.err.Error() }
 
-func (w *Workspace) busyError(ports []inboundPort) error {
+// busyError explains why ports are taken. afterStart means our own supervised core is
+// already running, so finding this workspace's core on a port is a clash inside the config.
+func (w *Workspace) busyError(ports []inboundPort, afterStart bool) error {
 	parts := make([]string, len(ports))
 	stale := 0
 	for i, p := range ports {
@@ -69,6 +71,8 @@ func (w *Workspace) busyError(ports []inboundPort) error {
 		switch {
 		case !ok:
 			parts[i] += "已被占用（无法识别占用进程，可能需要 root）"
+		case w.ownsProcess(o) && afterStart:
+			parts[i] += "与本配置中的其他入站冲突（多个入站用了同一端口）"
 		case w.ownsProcess(o):
 			stale = o.PID
 			parts[i] += fmt.Sprintf("被本数据目录残留的旧内核占用（pid %d，不受当前托管方式管理）", o.PID)
@@ -139,7 +143,7 @@ func (w *Workspace) checkPortsFree(cfg []byte) error {
 		}
 	}
 	if len(busy) > 0 {
-		return w.busyError(busy)
+		return w.busyError(busy, false)
 	}
 	return nil
 }
@@ -158,7 +162,7 @@ func (w *Workspace) verifyListeners(ctx context.Context, cfg []byte) error {
 		}
 	}
 	if len(failed) > 0 {
-		err := w.busyError(failed)
+		err := w.busyError(failed, true)
 		var stale *StaleCoreError
 		if errors.As(err, &stale) {
 			return err

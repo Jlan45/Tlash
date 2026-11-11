@@ -252,3 +252,34 @@ func TestOtherTlashDir(t *testing.T) {
 		t.Errorf("non-tlash core matched: %q", got)
 	}
 }
+
+// Reproduces airport profiles that ship "port: 7890": the managed mixed port must still listen.
+func TestProfilePortDoesNotStealMixedPort(t *testing.T) {
+	w := openTestWorkspace(t, "process")
+	ctx := context.Background()
+	mixed, _ := w.MixedPort()
+	socks := freePort(t)
+	src := filepath.Join(t.TempDir(), "airport.yaml")
+	content := fmt.Sprintf("port: %d\nsocks-port: %d\nallow-lan: true\nproxies:\n  - {name: n, type: socks5, server: 127.0.0.1, port: 1}\nrules:\n  - MATCH,DIRECT\n", mixed, socks)
+	if err := os.WriteFile(src, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.AddLocal(ctx, src, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer w.Stop(ctx)
+	cfg, err := w.Client().Config(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MixedPort != mixed || cfg.SocksPort != socks {
+		t.Fatalf("mixed=%d (want %d) socks=%d (want %d)", cfg.MixedPort, mixed, cfg.SocksPort, socks)
+	}
+	// Restart regenerates and keeps it that way.
+	if err := w.Restart(ctx); err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+}

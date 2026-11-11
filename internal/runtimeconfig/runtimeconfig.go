@@ -55,6 +55,9 @@ func Generate(profile []byte, overrides []NamedOverride, m appsettings.Managed, 
 	}
 
 	setOpt(root, "mixed-port", m.MixedPort, intNode)
+	if m.MixedPort != nil && *m.MixedPort > 0 {
+		dropSamePort(root, *m.MixedPort)
+	}
 	setOpt(root, "allow-lan", m.AllowLan, boolNode)
 	setOpt(root, "bind-address", m.BindAddress, strNode)
 	setOpt(root, "ipv6", m.IPv6, boolNode)
@@ -187,3 +190,14 @@ proxies: []
 rules:
   - MATCH,DIRECT
 `
+
+// dropSamePort removes other inbounds that reuse the managed mixed port. Subscriptions often
+// ship "port: 7890"; mihomo would open that first and then fail to bind mixed-port, leaving the
+// port Tlash promised missing. The mixed listener already serves both HTTP and SOCKS.
+func dropSamePort(root *yaml.Node, mixed int) {
+	for _, key := range []string{"port", "socks-port", "redir-port", "tproxy-port"} {
+		if n := lookup(root, key); n != nil && n.Value == strconv.Itoa(mixed) {
+			deleteKey(root, key)
+		}
+	}
+}

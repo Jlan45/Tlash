@@ -190,26 +190,8 @@ func (w *Workspace) Generate() ([]byte, error) {
 }
 
 func (w *Workspace) applyLocked(ctx context.Context) error {
-	cfg, err := w.Generate()
+	cfg, err := w.writeConfigLocked(ctx)
 	if err != nil {
-		return err
-	}
-	staged := w.ConfigPath + ".new"
-	if err := appsettings.WriteFileAtomic(staged, cfg, 0o600); err != nil {
-		return err
-	}
-	defer os.Remove(staged)
-	if w.CoreInstalled() {
-		if err := runtimeconfig.Validate(ctx, w.Core.Current, w.RuntimeDir, staged); err != nil {
-			return err
-		}
-	}
-	if _, err := os.Stat(w.ConfigPath); err == nil {
-		if err := os.Rename(w.ConfigPath, w.ConfigPath+".bak"); err != nil {
-			return err
-		}
-	}
-	if err := os.Rename(staged, w.ConfigPath); err != nil {
 		return err
 	}
 	if running, _ := w.Service().Running(ctx); running {
@@ -219,6 +201,33 @@ func (w *Workspace) applyLocked(ctx context.Context) error {
 		return w.verifyListeners(ctx, cfg)
 	}
 	return nil
+}
+
+// writeConfigLocked generates, validates and installs config.yaml without touching the core.
+func (w *Workspace) writeConfigLocked(ctx context.Context) ([]byte, error) {
+	cfg, err := w.Generate()
+	if err != nil {
+		return nil, err
+	}
+	staged := w.ConfigPath + ".new"
+	if err := appsettings.WriteFileAtomic(staged, cfg, 0o600); err != nil {
+		return nil, err
+	}
+	defer os.Remove(staged)
+	if w.CoreInstalled() {
+		if err := runtimeconfig.Validate(ctx, w.Core.Current, w.RuntimeDir, staged); err != nil {
+			return nil, err
+		}
+	}
+	if _, err := os.Stat(w.ConfigPath); err == nil {
+		if err := os.Rename(w.ConfigPath, w.ConfigPath+".bak"); err != nil {
+			return nil, err
+		}
+	}
+	if err := os.Rename(staged, w.ConfigPath); err != nil {
+		return nil, err
+	}
+	return cfg, nil
 }
 
 // RollbackConfig restores the config that was in place before the last Apply.
@@ -288,6 +297,11 @@ func (w *Workspace) Stop(ctx context.Context) error {
 func (w *Workspace) Restart(ctx context.Context) error {
 	w.opMu.Lock()
 	defer w.opMu.Unlock()
+	// Regenerate first, so a restart also picks up profile or Tlash changes (e.g. after an upgrade).
+	cfg, err := w.writeConfigLocked(ctx)
+	if err != nil {
+		return err
+	}
 	if err := w.Service().Install(ctx); err != nil {
 		return err
 	}
@@ -296,10 +310,6 @@ func (w *Workspace) Restart(ctx context.Context) error {
 	}
 	if err := w.waitForAPI(ctx, 15*time.Second); err != nil {
 		return err
-	}
-	cfg, err := os.ReadFile(w.ConfigPath)
-	if err != nil {
-		return nil
 	}
 	return w.verifyListeners(ctx, cfg)
 }

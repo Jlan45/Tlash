@@ -171,3 +171,23 @@ func TestGenerateResources(t *testing.T) {
 		}
 	}
 }
+
+// Profiles commonly set port: 7890 too; it must not steal the managed mixed port.
+func TestGenerateDropsInboundsOnMixedPort(t *testing.T) {
+	port := 7890
+	out, err := Generate([]byte("port: 7890\nsocks-port: 7891\nredir-port: 7890\nproxies: []\n"), nil, appsettings.Managed{MixedPort: &port}, "/s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	_ = yaml.Unmarshal(out, &got)
+	if _, ok := got["port"]; ok {
+		t.Errorf("port 7890 kept alongside mixed-port: %v", got)
+	}
+	if _, ok := got["redir-port"]; ok {
+		t.Errorf("redir-port 7890 kept: %v", got)
+	}
+	if got["socks-port"] != 7891 || got["mixed-port"] != 7890 {
+		t.Errorf("unrelated ports changed: %v", got)
+	}
+}
