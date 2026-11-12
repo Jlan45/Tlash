@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,14 +17,17 @@ import (
 type System struct {
 	ProcSys   string // /proc/sys
 	SysctlDir string // /etc/sysctl.d
-	Run       func(ctx context.Context, name string, args ...string) ([]byte, error)
-	LookPath  func(string) (string, error)
+	// OpenWrt routes DNS through dnsmasq and opens fw4 with a uci firewall zone.
+	OpenWrt  bool
+	Run      func(ctx context.Context, name string, args ...string) ([]byte, error)
+	LookPath func(string) (string, error)
 }
 
 func Host() System {
 	return System{
 		ProcSys:   "/proc/sys",
 		SysctlDir: "/etc/sysctl.d",
+		OpenWrt:   IsOpenWrt(),
 		Run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
 			return exec.CommandContext(ctx, name, args...).CombinedOutput()
 		},
@@ -37,6 +41,18 @@ type State struct {
 	PrevIPv6Forward string   `json:"prev_ipv6_forward,omitempty"`
 	SysctlFile      string   `json:"sysctl_file,omitempty"`
 	ForwardRules    []string `json:"forward_rules,omitempty"` // iptables binaries we inserted rules with
+
+	// OpenWrt: the uci firewall zone we added and dnsmasq's previous upstream settings.
+	FirewallZone        bool     `json:"firewall_zone,omitempty"`
+	Dnsmasq             bool     `json:"dnsmasq,omitempty"`
+	DnsmasqPrevServers  []string `json:"dnsmasq_prev_servers,omitempty"`
+	DnsmasqPrevNoResolv string   `json:"dnsmasq_prev_noresolv,omitempty"`
+}
+
+// IsOpenWrt reports whether this host runs OpenWrt.
+func IsOpenWrt() bool {
+	_, err := os.Stat("/etc/openwrt_release")
+	return err == nil
 }
 
 const sysctlName = "99-tlash-gateway.conf"
@@ -59,8 +75,9 @@ func (s System) write(key, v string) error {
 	return nil
 }
 
-// Apply enables forwarding and opens FORWARD for tunDev; on error it reverts what it did.
-func (s System) Apply(ctx context.Context, ipv6 bool, tunDev string) (State, error) {
+// Apply enables forwarding and opens FORWARD for tunDev; on OpenWrt it also points dnsmasq at
+// dnsAddr (mihomo's DNS) and adds a firewall zone for tunDev. On error it reverts what it did.
+func (s System) Apply(ctx context.Context, ipv6 bool, tunDev, dnsAddr string) (State, error) {
 	st := State{PrevIPv4Forward: s.read("net.ipv4.ip_forward")}
 	if err := s.write("net.ipv4.ip_forward", "1"); err != nil {
 		return st, err
@@ -95,7 +112,113 @@ func (s System) Apply(ctx context.Context, ipv6 bool, tunDev string) (State, err
 			st.ForwardRules = append(st.ForwardRules, bin)
 		}
 	}
+	if s.OpenWrt {
+		if err := s.openwrtApply(ctx, &st, tunDev, dnsAddr); err != nil {
+			_ = s.Revert(ctx, st, tunDev)
+			return st, err
+		}
+	}
 	return st, nil
+}
+
+func (s System) uci(ctx context.Context, args ...string) (string, error) {
+	out, err := s.Run(ctx, "uci", args...)
+	if err != nil {
+		return "", fmt.Errorf("uci %s: %s", strings.Join(args, " "), strings.TrimSpace(string(out)))
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func (s System) uciAll(ctx context.Context, cmds [][]string) error {
+	for _, c := range cmds {
+		if _, err := s.uci(ctx, c...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s System) service(ctx context.Context, name, verb string) error {
+	if out, err := s.Run(ctx, "/etc/init.d/"+name, verb); err != nil {
+		return fmt.Errorf("%s %s: %s", name, verb, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// openwrtApply lets LAN traffic forward into the TUN under fw4 and makes dnsmasq (which owns
+// port 53 on OpenWrt) forward every query to mihomo instead of its usual upstreams.
+func (s System) openwrtApply(ctx context.Context, st *State, tunDev, dnsAddr string) error {
+	if existing, _ := s.uci(ctx, "-q", "get", "firewall.tlash"); existing == "" {
+		if err := s.uciAll(ctx, [][]string{
+			{"set", "firewall.tlash=zone"},
+			{"set", "firewall.tlash.name=tlash"},
+			{"add_list", "firewall.tlash.device=" + tunDev},
+			{"set", "firewall.tlash.input=ACCEPT"},
+			{"set", "firewall.tlash.output=ACCEPT"},
+			{"set", "firewall.tlash.forward=ACCEPT"},
+			{"set", "firewall.tlash_lan=forwarding"},
+			{"set", "firewall.tlash_lan.src=lan"},
+			{"set", "firewall.tlash_lan.dest=tlash"},
+			{"commit", "firewall"},
+		}); err != nil {
+			return err
+		}
+		st.FirewallZone = true
+		if err := s.service(ctx, "firewall", "reload"); err != nil {
+			return err
+		}
+	}
+
+	servers, _ := s.uci(ctx, "-q", "get", "dhcp.@dnsmasq[0].server")
+	noresolv, _ := s.uci(ctx, "-q", "get", "dhcp.@dnsmasq[0].noresolv")
+	st.Dnsmasq, st.DnsmasqPrevServers, st.DnsmasqPrevNoResolv = true, strings.Fields(servers), noresolv
+	_, _ = s.uci(ctx, "-q", "delete", "dhcp.@dnsmasq[0].server")
+	if err := s.uciAll(ctx, [][]string{
+		{"add_list", "dhcp.@dnsmasq[0].server=" + dnsmasqTarget(dnsAddr)},
+		{"set", "dhcp.@dnsmasq[0].noresolv=1"},
+		{"commit", "dhcp"},
+	}); err != nil {
+		return err
+	}
+	return s.service(ctx, "dnsmasq", "restart")
+}
+
+// dnsmasqTarget turns "0.0.0.0:1053" into dnsmasq's "127.0.0.1#1053".
+func dnsmasqTarget(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "127.0.0.1#1053"
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	return host + "#" + port
+}
+
+func (s System) openwrtRevert(ctx context.Context, st State) []error {
+	var errs []error
+	if st.FirewallZone {
+		_, _ = s.uci(ctx, "-q", "delete", "firewall.tlash")
+		_, _ = s.uci(ctx, "-q", "delete", "firewall.tlash_lan")
+		_, err := s.uci(ctx, "commit", "firewall")
+		errs = append(errs, err, s.service(ctx, "firewall", "reload"))
+	}
+	if st.Dnsmasq {
+		_, _ = s.uci(ctx, "-q", "delete", "dhcp.@dnsmasq[0].server")
+		for _, srv := range st.DnsmasqPrevServers {
+			_, err := s.uci(ctx, "add_list", "dhcp.@dnsmasq[0].server="+srv)
+			errs = append(errs, err)
+		}
+		if st.DnsmasqPrevNoResolv == "" {
+			_, _ = s.uci(ctx, "-q", "delete", "dhcp.@dnsmasq[0].noresolv")
+		} else {
+			_, err := s.uci(ctx, "set", "dhcp.@dnsmasq[0].noresolv="+st.DnsmasqPrevNoResolv)
+			errs = append(errs, err)
+		}
+		_, err := s.uci(ctx, "commit", "dhcp")
+		errs = append(errs, err, s.service(ctx, "dnsmasq", "restart"))
+	}
+	return errs
 }
 
 // EnsureForward re-adds the FORWARD rules after a reboot (they don't persist on their own).
@@ -144,6 +267,7 @@ func (s System) Revert(ctx context.Context, st State, tunDev string) error {
 			errs = append(errs, err)
 		}
 	}
+	errs = append(errs, s.openwrtRevert(ctx, st)...)
 	for _, bin := range st.ForwardRules {
 		for _, dir := range []string{"-i", "-o"} {
 			rule := []string{"FORWARD", dir, tunDev, "-m", "comment", "--comment", ruleComment, "-j", "ACCEPT"}

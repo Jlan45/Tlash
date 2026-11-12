@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -31,8 +32,11 @@ const (
 
 // Paths locates the current core and the one kept for rollback.
 type Paths struct {
-	Current  string
+	Current string
+	// Previous keeps the replaced core for rollback; empty disables that (small flash).
 	Previous string
+	// Archive, if set, keeps a gzip copy of the core (e.g. in flash while Current is in RAM).
+	Archive string
 }
 
 func PathsIn(coreDir string) Paths {
@@ -73,9 +77,15 @@ func AssetArch() (string, error) {
 	case "arm64":
 		return "arm64", nil
 	case "arm":
-		return "armv7", nil // Tlash itself ships only as GOARM=7
+		// Match the core to the ARM level Tlash itself was built for (5, 6 or 7).
+		return "armv" + buildSetting("GOARM", "7"), nil
 	case "386":
 		return "386", nil
+	case "mips", "mipsle":
+		// Tlash ships soft-float MIPS builds, which run on every MIPS CPU; so does this core.
+		return runtime.GOARCH + "-softfloat", nil
+	case "riscv64":
+		return "riscv64", nil
 	}
 	return "", fmt.Errorf("不支持的架构: %s", runtime.GOARCH)
 }
@@ -272,8 +282,15 @@ func ImportFile(ctx context.Context, src string, paths Paths) (string, error) {
 	return installBinary(ctx, b, paths)
 }
 
+// InstallBytes installs a core from raw or gzipped bytes (used when relocating it).
+func InstallBytes(ctx context.Context, data []byte, paths Paths) (string, error) {
+	return installBinary(ctx, data, paths)
+}
+
 func installBinary(ctx context.Context, data []byte, paths Paths) (string, error) {
-	if bytes.HasPrefix(data, []byte{0x1f, 0x8b}) {
+	gzipped := bytes.HasPrefix(data, []byte{0x1f, 0x8b})
+	archive := data
+	if gzipped {
 		zr, err := gzip.NewReader(bytes.NewReader(data))
 		if err != nil {
 			return "", fmt.Errorf("解压内核失败: %w", err)
@@ -286,6 +303,9 @@ func installBinary(ctx context.Context, data []byte, paths Paths) (string, error
 	if !bytes.HasPrefix(data, []byte("\x7fELF")) {
 		return "", errors.New("文件不是 Linux 可执行文件")
 	}
+	if err := os.MkdirAll(filepath.Dir(paths.Current), 0o700); err != nil {
+		return "", err
+	}
 	staged := paths.Current + ".new"
 	if err := appsettings.WriteFileAtomic(staged, data, 0o755); err != nil {
 		return "", err
@@ -295,8 +315,20 @@ func installBinary(ctx context.Context, data []byte, paths Paths) (string, error
 		os.Remove(staged)
 		return "", fmt.Errorf("新内核无法在本机运行（架构不匹配？）: %w", err)
 	}
+	if paths.Archive != "" {
+		if !gzipped {
+			if archive, err = gzipBytes(data); err != nil {
+				os.Remove(staged)
+				return "", err
+			}
+		}
+		if err := appsettings.WriteFileAtomic(paths.Archive, archive, 0o600); err != nil {
+			os.Remove(staged)
+			return "", err
+		}
+	}
 	// Renaming over a running binary is safe on Linux; the old process keeps its inode.
-	if _, err := os.Stat(paths.Current); err == nil {
+	if _, err := os.Stat(paths.Current); err == nil && paths.Previous != "" {
 		if err := os.Rename(paths.Current, paths.Previous); err != nil {
 			os.Remove(staged)
 			return "", err
@@ -308,8 +340,46 @@ func installBinary(ctx context.Context, data []byte, paths Paths) (string, error
 	return version, nil
 }
 
+func gzipBytes(data []byte) ([]byte, error) {
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	if _, err := zw.Write(data); err != nil {
+		return nil, err
+	}
+	if err := zw.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// ExtractArchive restores Current from Archive (e.g. into RAM after a reboot).
+func ExtractArchive(paths Paths) error {
+	if paths.Archive == "" {
+		return errors.New("没有压缩的内核副本")
+	}
+	gz, err := os.ReadFile(paths.Archive)
+	if err != nil {
+		return err
+	}
+	zr, err := gzip.NewReader(bytes.NewReader(gz))
+	if err != nil {
+		return fmt.Errorf("解压内核失败: %w", err)
+	}
+	data, err := io.ReadAll(io.LimitReader(zr, maxAssetSize))
+	if err != nil {
+		return fmt.Errorf("解压内核失败: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(paths.Current), 0o700); err != nil {
+		return err
+	}
+	return appsettings.WriteFileAtomic(paths.Current, data, 0o755)
+}
+
 // Rollback swaps the current core with the previous one.
 func Rollback(paths Paths) error {
+	if paths.Previous == "" {
+		return errors.New("当前存放位置不保留旧版本内核，无法回滚")
+	}
 	if _, err := os.Stat(paths.Previous); err != nil {
 		return errors.New("没有可回滚的旧版本内核")
 	}
@@ -322,4 +392,18 @@ func Rollback(paths Paths) error {
 		return err
 	}
 	return os.Rename(tmp, paths.Previous)
+}
+
+// buildSetting reads a GOARM / GOMIPS style setting recorded in the binary, e.g. "7".
+func buildSetting(key, fallback string) string {
+	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, kv := range info.Settings {
+			if kv.Key == key && kv.Value != "" {
+				// GOARM may carry a float ABI suffix such as "7,softfloat".
+				v, _, _ := strings.Cut(kv.Value, ",")
+				return v
+			}
+		}
+	}
+	return fallback
 }

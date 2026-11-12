@@ -345,6 +345,7 @@ func (p *settingsPanel) coreItems() []settingItem {
 		{label: "上一版本", value: prev, hint: "b 回滚", edit: acts["b"]},
 		{label: "更新通道", value: channelLabel(settings.Core.Channel), hint: "c 切换", edit: acts["c"]},
 		{label: "下载镜像", value: mirror, hint: "M 修改", edit: acts["M"]},
+		{label: "存放位置", value: coreLocationLabel(settings.Core.Location) + styleDim.Render("  数据目录剩余 "+freeLabel(ws.FreeSpace())), hint: "闪存小的路由器可改为压缩存放或只放内存；enter 切换", edit: p.cycleCoreLocation},
 		{label: "托管方式", value: s.core.kind.Label()},
 		{label: "运行状态", value: state, hint: "在 1 状态 面板按 s 启停"},
 	}
@@ -674,4 +675,44 @@ func dashboardLabel(d string) string {
 		return "不安装"
 	}
 	return d
+}
+
+var coreLocations = []string{appsettings.CoreInData, appsettings.CoreCompressed, appsettings.CoreRAMOnly}
+
+func coreLocationLabel(loc string) string {
+	switch loc {
+	case appsettings.CoreCompressed:
+		return "压缩存放（开机解压到内存，约占原大小 1/3）"
+	case appsettings.CoreRAMOnly:
+		return "只放内存（不占闪存，开机自动下载，不能回滚）"
+	}
+	return "数据目录"
+}
+
+func freeLabel(n int64) string {
+	if n < 0 {
+		return "未知"
+	}
+	return formatBytes(n)
+}
+
+func (p *settingsPanel) cycleCoreLocation() tea.Cmd {
+	ws, sess := p.sess.ws, p.sess
+	cur := ws.Settings().Core.Location
+	next := coreLocations[(slices.Index(coreLocations, cur)+1)%len(coreLocations)]
+	if !sess.core.installed {
+		if err := ws.UpdateSettings(func(s *appsettings.Settings) { s.Core.Location = next }); err != nil {
+			return notifyErr("保存失败", err)
+		}
+		return tea.Batch(notify("存放位置："+coreLocationLabel(next)), fetchCoreState(ws, true))
+	}
+	prompt := fmt.Sprintf("内核改为%s？", coreLocationLabel(next))
+	if next == appsettings.CoreRAMOnly {
+		prompt += "\n开机时需要能访问 GitHub（或已设置的下载镜像）才能下载内核。"
+	}
+	return askConfirm(prompt, func() tea.Cmd {
+		return sess.job("core-binary", "移动内核", func(ctx context.Context) (string, error) {
+			return "内核已改为" + coreLocationLabel(next), ws.SetCoreLocation(ctx, next)
+		}, sess.refreshAll())
+	})
 }

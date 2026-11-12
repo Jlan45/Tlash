@@ -2,8 +2,14 @@ package workspace
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"sync/atomic"
+	"syscall"
 
 	"github.com/Jlan45/Tlash/internal/appsettings"
 	"github.com/Jlan45/Tlash/internal/corebinary"
@@ -37,8 +43,10 @@ func (w *Workspace) UpdateManaged(ctx context.Context, fn func(*appsettings.Mana
 
 // CoreVersion is the installed core's version, or "" when none is installed.
 func (w *Workspace) CoreVersion(ctx context.Context) (current, previous string) {
-	current, _ = corebinary.Version(ctx, w.Core.Current)
-	previous, _ = corebinary.Version(ctx, w.Core.Previous)
+	current, _ = corebinary.Version(ctx, w.CorePaths().Current)
+	if prev := w.CorePaths().Previous; prev != "" {
+		previous, _ = corebinary.Version(ctx, prev)
+	}
 	return current, previous
 }
 
@@ -50,7 +58,7 @@ func (w *Workspace) LatestCore(ctx context.Context) (corebinary.Release, error) 
 
 // InstallCore downloads r; a running core is restarted onto the new binary.
 func (w *Workspace) InstallCore(ctx context.Context, r corebinary.Release, progress *atomic.Int64) (corebinary.InstallResult, error) {
-	res, err := corebinary.NewDownloader(w.Settings().Mirror).Download(ctx, r, w.Core, progress)
+	res, err := corebinary.NewDownloader(w.Settings().Mirror).Download(ctx, r, w.CorePaths(), progress)
 	if err != nil {
 		return res, err
 	}
@@ -58,7 +66,7 @@ func (w *Workspace) InstallCore(ctx context.Context, r corebinary.Release, progr
 }
 
 func (w *Workspace) ImportCore(ctx context.Context, path string) (string, error) {
-	v, err := corebinary.ImportFile(ctx, path, w.Core)
+	v, err := corebinary.ImportFile(ctx, path, w.CorePaths())
 	if err != nil {
 		return "", err
 	}
@@ -66,7 +74,7 @@ func (w *Workspace) ImportCore(ctx context.Context, path string) (string, error)
 }
 
 func (w *Workspace) RollbackCore(ctx context.Context) error {
-	if err := corebinary.Rollback(w.Core); err != nil {
+	if err := corebinary.Rollback(w.CorePaths()); err != nil {
 		return err
 	}
 	return w.restartIfRunning(ctx)
@@ -117,4 +125,83 @@ func cloneManaged(m appsettings.Managed) appsettings.Managed {
 		m.Sniffer = &sn
 	}
 	return m
+}
+
+// ramBase is where RAM-resident cores go (/tmp is tmpfs on OpenWrt); a var for tests.
+var ramBase = "/tmp"
+
+// CorePaths locates the core for the configured storage location.
+func (w *Workspace) CorePaths() corebinary.Paths {
+	return w.corePathsFor(w.Settings().Core.Location)
+}
+
+func (w *Workspace) corePathsFor(location string) corebinary.Paths {
+	data := filepath.Join(w.Dir, "core")
+	sum := sha256.Sum256([]byte(w.Dir))
+	ram := filepath.Join(ramBase, "tlash-"+hex.EncodeToString(sum[:4]), "mihomo")
+	switch location {
+	case appsettings.CoreCompressed:
+		return corebinary.Paths{Current: ram, Archive: filepath.Join(data, "mihomo.gz")}
+	case appsettings.CoreRAMOnly:
+		return corebinary.Paths{Current: ram}
+	}
+	return corebinary.PathsIn(data)
+}
+
+// EnsureCore puts the core back in RAM after a reboot: unpacks the archive, or downloads
+// the latest build of the configured channel for RAM-only storage.
+func (w *Workspace) EnsureCore(ctx context.Context) error {
+	paths := w.CorePaths()
+	if _, err := os.Stat(paths.Current); err == nil {
+		return nil
+	}
+	switch w.Settings().Core.Location {
+	case appsettings.CoreCompressed:
+		return corebinary.ExtractArchive(paths)
+	case appsettings.CoreRAMOnly:
+		r, err := w.LatestCore(ctx)
+		if err != nil {
+			return fmt.Errorf("内存中的内核已丢失，重新下载失败: %w", err)
+		}
+		_, err = corebinary.NewDownloader(w.Settings().Mirror).Download(ctx, r, paths, nil)
+		return err
+	}
+	return nil
+}
+
+// SetCoreLocation moves the installed core to another storage location.
+func (w *Workspace) SetCoreLocation(ctx context.Context, location string) error {
+	if err := w.EnsureCore(ctx); err != nil {
+		return err
+	}
+	from := w.CorePaths()
+	data, err := os.ReadFile(from.Current)
+	if err != nil {
+		return fmt.Errorf("读取当前内核失败: %w", err)
+	}
+	to := w.corePathsFor(location)
+	if _, err := corebinary.InstallBytes(ctx, data, to); err != nil {
+		return err
+	}
+	if err := w.UpdateSettings(func(s *appsettings.Settings) { s.Core.Location = location }); err != nil {
+		return err
+	}
+	// Drop files the new location doesn't use (that's the space being saved).
+	keep := map[string]bool{to.Current: true, to.Previous: true, to.Archive: true}
+	for _, f := range []string{from.Current, from.Previous, from.Archive} {
+		if f != "" && !keep[f] {
+			_ = os.Remove(f)
+		}
+	}
+	// The service now points at a different binary path.
+	return w.restartIfRunning(ctx)
+}
+
+// FreeSpace is the free space of the data dir's filesystem in bytes.
+func (w *Workspace) FreeSpace() int64 {
+	var st syscall.Statfs_t
+	if syscall.Statfs(w.Dir, &st) != nil {
+		return -1
+	}
+	return int64(st.Bavail) * int64(st.Bsize)
 }

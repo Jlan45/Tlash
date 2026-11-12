@@ -59,7 +59,13 @@ func newRootCmd() *cobra.Command {
 				buildinfo.Version, buildinfo.Commit, buildinfo.Date, runtime.GOOS, runtime.GOARCH)
 		},
 	})
-	cmd.AddCommand(newTaskCmd(f), newEnvCmd(f), newGatewayCmd(f))
+	cmd.AddCommand(newTaskCmd(f), newEnvCmd(f), newGatewayCmd(f), &cobra.Command{
+		Use:    "prestart",
+		Short:  "内核启动前的准备：把内核恢复到内存、恢复网关系统设置（服务启动钩子）",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		RunE:   func(cmd *cobra.Command, _ []string) error { return prestart(cmd.Context(), f.dir) },
+	})
 	return cmd
 }
 
@@ -101,15 +107,30 @@ func newGatewayCmd(f *rootFlags) *cobra.Command {
 	gw.AddCommand(guard,
 		&cobra.Command{
 			Use:    "prepare",
-			Short:  "内核启动前恢复网关所需的系统设置（服务启动钩子）",
+			Short:  "旧名称，等同 tlash prestart（v0.1.0-alpha.11 生成的服务文件仍在调用）",
 			Hidden: true,
 			Args:   cobra.NoArgs,
+			RunE:   func(cmd *cobra.Command, _ []string) error { return prestart(cmd.Context(), f.dir) },
+		},
+		&cobra.Command{
+			Use:   "check",
+			Short: "检查本机能否作为网关（环境检查）",
+			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, _ []string) error {
 				ws, err := open()
 				if err != nil {
 					return err
 				}
-				return ws.PrepareGateway(cmd.Context())
+				failed := false
+				for _, c := range ws.GatewayPreflight(cmd.Context()) {
+					mark := map[workspace.CheckLevel]string{workspace.CheckOK: "✓", workspace.CheckWarn: "!", workspace.CheckFail: "✗"}[c.Level]
+					fmt.Fprintf(cmd.OutOrStdout(), "%s %s  %s\n", mark, c.Name, c.Detail)
+					failed = failed || c.Level == workspace.CheckFail
+				}
+				if failed {
+					return fmt.Errorf("环境检查未通过")
+				}
+				return nil
 			},
 		},
 		&cobra.Command{
@@ -134,6 +155,17 @@ func newGatewayCmd(f *rootFlags) *cobra.Command {
 		},
 	)
 	return gw
+}
+
+func prestart(ctx context.Context, dir string) error {
+	ws, err := workspace.Open(dir)
+	if err != nil {
+		return err
+	}
+	if err := ws.EnsureCore(ctx); err != nil {
+		return err
+	}
+	return ws.PrepareGateway(ctx)
 }
 
 func newEnvCmd(f *rootFlags) *cobra.Command {

@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/Jlan45/Tlash/internal/appsettings"
-	"github.com/Jlan45/Tlash/internal/corebinary"
 	"github.com/Jlan45/Tlash/internal/coreservice"
 	"github.com/Jlan45/Tlash/internal/mihomoapi"
 	"github.com/Jlan45/Tlash/internal/override"
@@ -30,7 +29,6 @@ type Workspace struct {
 	RuntimeDir string
 	ConfigPath string
 	SocketPath string
-	Core       corebinary.Paths
 	Profiles   *profile.Store
 	Overrides  *override.Store
 
@@ -70,7 +68,6 @@ func Open(dir string) (*Workspace, error) {
 	w := &Workspace{
 		Dir:        dir,
 		RuntimeDir: filepath.Join(dir, "runtime"),
-		Core:       corebinary.PathsIn(filepath.Join(dir, "core")),
 		Profiles:   profile.NewStore(filepath.Join(dir, "profiles")),
 		Overrides:  override.NewStore(filepath.Join(dir, "overrides")),
 	}
@@ -102,7 +99,7 @@ func (w *Workspace) rebuildService() error {
 	// Caller holds mu (or is Open, before the workspace is shared).
 	m, err := coreservice.New(coreservice.Detect(w.settings.Core.Service), coreservice.Spec{
 		Name:       ServiceName,
-		CorePath:   w.Core.Current,
+		CorePath:   w.corePathsFor(w.settings.Core.Location).Current,
 		HomeDir:    w.RuntimeDir,
 		ConfigPath: w.ConfigPath,
 		LogPath:    filepath.Join(w.RuntimeDir, "mihomo.log"),
@@ -140,7 +137,7 @@ func (w *Workspace) UpdateSettings(fn func(*appsettings.Settings)) error {
 	if err := appsettings.Save(w.Dir, next); err != nil {
 		return err
 	}
-	serviceChanged := next.Core.Service != w.settings.Core.Service
+	serviceChanged := next.Core.Service != w.settings.Core.Service || next.Core.Location != w.settings.Core.Location
 	w.settings = next
 	if serviceChanged {
 		return w.rebuildService()
@@ -149,7 +146,13 @@ func (w *Workspace) UpdateSettings(fn func(*appsettings.Settings)) error {
 }
 
 func (w *Workspace) CoreInstalled() bool {
-	_, err := os.Stat(w.Core.Current)
+	paths := w.CorePaths()
+	if paths.Archive != "" {
+		if _, err := os.Stat(paths.Archive); err == nil {
+			return true
+		}
+	}
+	_, err := os.Stat(paths.Current)
 	return err == nil
 }
 
@@ -188,6 +191,7 @@ func (w *Workspace) Generate() ([]byte, error) {
 		named = append(named, runtimeconfig.NamedOverride{Name: o.Name, Content: b})
 	}
 	gw := settings.Gateway
+	gw.DNSListen = w.GatewayDNSListen()
 	return runtimeconfig.Generate(content, named, settings.Managed, &gw, w.SocketPath)
 }
 
@@ -217,7 +221,7 @@ func (w *Workspace) writeConfigLocked(ctx context.Context) ([]byte, error) {
 	}
 	defer os.Remove(staged)
 	if w.CoreInstalled() {
-		if err := runtimeconfig.Validate(ctx, w.Core.Current, w.RuntimeDir, staged); err != nil {
+		if err := runtimeconfig.Validate(ctx, w.CorePaths().Current, w.RuntimeDir, staged); err != nil {
 			return nil, err
 		}
 	}
@@ -267,6 +271,9 @@ func (w *Workspace) Start(ctx context.Context) error {
 func (w *Workspace) startLocked(ctx context.Context) error {
 	if !w.CoreInstalled() {
 		return errors.New("尚未安装内核，请先在内核页下载")
+	}
+	if err := w.EnsureCore(ctx); err != nil {
+		return err
 	}
 	if running, _ := w.Service().Running(ctx); running {
 		return nil
@@ -357,5 +364,5 @@ func (w *Workspace) prepareCommand() []string {
 	if resolved, err := filepath.EvalSymlinks(bin); err == nil {
 		bin = resolved
 	}
-	return []string{bin, "--dir", w.Dir, "gateway", "prepare"}
+	return []string{bin, "--dir", w.Dir, "prestart"}
 }

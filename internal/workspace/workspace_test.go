@@ -215,7 +215,7 @@ func TestStartRecognisesStaleCore(t *testing.T) {
 	if err := w.Apply(ctx); err != nil {
 		t.Fatal(err)
 	}
-	orphan := exec.Command(w.Core.Current, "-d", w.RuntimeDir, "-f", w.ConfigPath)
+	orphan := exec.Command(w.CorePaths().Current, "-d", w.RuntimeDir, "-f", w.ConfigPath)
 	if err := orphan.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -281,5 +281,66 @@ func TestProfilePortDoesNotStealMixedPort(t *testing.T) {
 	// Restart regenerates and keeps it that way.
 	if err := w.Restart(ctx); err != nil {
 		t.Fatalf("restart: %v", err)
+	}
+}
+
+// Small-flash routers keep the core compressed (or not at all) and run it from RAM.
+func TestCoreLocations(t *testing.T) {
+	w := openTestWorkspace(t, "process")
+	old := ramBase
+	ramBase = t.TempDir()
+	defer func() { ramBase = old }()
+	ctx := context.Background()
+	dataCore := filepath.Join(w.Dir, "core", "mihomo")
+	archive := filepath.Join(w.Dir, "core", "mihomo.gz")
+
+	if err := w.SetCoreLocation(ctx, appsettings.CoreCompressed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(dataCore); !os.IsNotExist(err) {
+		t.Fatal("uncompressed core left in the data dir")
+	}
+	gz, err := os.Stat(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ram := w.CorePaths().Current
+	full, _ := os.Stat(ram)
+	if !strings.HasPrefix(ram, ramBase) || gz.Size() >= full.Size()/2 {
+		t.Fatalf("ram=%s archive %d bytes vs core %d bytes", ram, gz.Size(), full.Size())
+	}
+
+	// Reboot: RAM is empty; starting unpacks the archive again.
+	_ = os.Remove(ram)
+	if !w.CoreInstalled() {
+		t.Fatal("compressed core should count as installed")
+	}
+	if err := w.Start(ctx); err != nil {
+		t.Fatalf("start after reboot: %v", err)
+	}
+	if v, _ := w.CoreVersion(ctx); v == "" {
+		t.Fatal("core not restored into RAM")
+	}
+	_ = w.Stop(ctx)
+
+	if err := w.SetCoreLocation(ctx, appsettings.CoreRAMOnly); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(archive); !os.IsNotExist(err) {
+		t.Fatal("archive left behind in RAM-only mode")
+	}
+	if _, err := os.Stat(w.CorePaths().Current); err != nil {
+		t.Fatal("core missing from RAM")
+	}
+	if err := w.RollbackCore(ctx); err == nil {
+		t.Fatal("rollback should be unavailable without a kept previous core")
+	}
+
+	// Back to the data dir.
+	if err := w.SetCoreLocation(ctx, appsettings.CoreInData); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(dataCore); err != nil {
+		t.Fatal("core not moved back to the data dir")
 	}
 }

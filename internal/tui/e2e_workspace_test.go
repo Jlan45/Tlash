@@ -140,7 +140,7 @@ func TestStaleCorePromptsCleanup(t *testing.T) {
 	if err := ws.Apply(ctx); err != nil {
 		t.Fatal(err)
 	}
-	orphan := exec.Command(ws.Core.Current, "-d", ws.RuntimeDir, "-f", ws.ConfigPath)
+	orphan := exec.Command(ws.CorePaths().Current, "-d", ws.RuntimeDir, "-f", ws.ConfigPath)
 	if err := orphan.Start(); err != nil {
 		t.Fatal(err)
 	}

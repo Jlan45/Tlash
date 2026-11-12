@@ -59,9 +59,25 @@ func (w *Workspace) sysStatePath() string {
 	return filepath.Join(w.RuntimeDir, "gateway-system.json")
 }
 
+// GatewayDNSListen is the DNS address in effect: the setting, or the platform default.
+func (w *Workspace) GatewayDNSListen() string {
+	if l := w.Settings().Gateway.DNSListen; l != "" {
+		return l
+	}
+	if hostSystem().OpenWrt {
+		return "127.0.0.1:1053" // dnsmasq keeps :53 and forwards here
+	}
+	return "0.0.0.0:53"
+}
+
+// IsOpenWrt reports whether gateway integration targets OpenWrt (dnsmasq + fw4).
+func (w *Workspace) IsOpenWrt() bool { return hostSystem().OpenWrt }
+
 // GatewayPreflight checks the host can act as a gateway. CheckFail entries block enabling.
 func (w *Workspace) GatewayPreflight(ctx context.Context) []GatewayCheck {
 	g := w.Settings().Gateway.WithDefaults()
+	dnsListen := w.GatewayDNSListen()
+	openwrt := hostSystem().OpenWrt
 	var checks []GatewayCheck
 	add := func(name string, level CheckLevel, detail string) {
 		checks = append(checks, GatewayCheck{Name: name, Level: level, Detail: detail})
@@ -74,14 +90,29 @@ func (w *Workspace) GatewayPreflight(ctx context.Context) []GatewayCheck {
 	if !w.CoreInstalled() {
 		add("内核", CheckFail, "尚未安装内核")
 	}
-	if _, err := os.Stat("/dev/net/tun"); err == nil {
+	switch _, err := os.Stat("/dev/net/tun"); {
+	case err == nil:
 		add("/dev/net/tun", CheckOK, "")
-	} else {
+	case openwrt:
+		add("/dev/net/tun", CheckFail, "缺少 TUN 支持：opkg update && opkg install kmod-tun（OpenWrt 25 起用 apk add kmod-tun）")
+	default:
 		add("/dev/net/tun", CheckFail, "缺少 TUN 设备：加载 tun 模块（modprobe tun），容器中需要映射 /dev/net/tun")
 	}
-	if hasNetfilter() {
+	switch {
+	case openwrt:
+		if _, err := os.Stat("/sbin/fw4"); err == nil {
+			add("防火墙 fw4", CheckOK, "将为 TUN 网卡添加防火墙区域")
+		} else {
+			add("防火墙 fw4", CheckFail, "需要 OpenWrt 22.03 及以上（基于 nftables 的 fw4）")
+		}
+		if _, err := os.Stat("/usr/sbin/dnsmasq"); err == nil {
+			add("dnsmasq", CheckOK, "DNS 将由 dnsmasq 转发给 mihomo（"+dnsListen+"），关闭时还原")
+		} else {
+			add("dnsmasq", CheckWarn, "未找到 dnsmasq：局域网设备需要直接把 DNS 指向 "+dnsListen)
+		}
+	case hasNetfilter():
 		add("nftables / iptables", CheckOK, "")
-	} else {
+	default:
 		add("nftables / iptables", CheckWarn, "未找到 nft 或 iptables，auto-redirect 可能无法工作")
 	}
 	if g.DeviceMode == appsettings.DeviceModeSelected && len(g.Devices) == 0 {
@@ -89,10 +120,10 @@ func (w *Workspace) GatewayPreflight(ctx context.Context) []GatewayCheck {
 	}
 	// The DNS listener only matters before the gateway (and thus our listener) is on.
 	if !g.Enabled {
-		if err := checkListenable(g.DNSListen); err != nil {
-			add("DNS 监听 "+g.DNSListen, CheckFail, err.Error())
+		if err := checkListenable(dnsListen); err != nil {
+			add("DNS 监听 "+dnsListen, CheckFail, err.Error())
 		} else {
-			add("DNS 监听 "+g.DNSListen, CheckOK, "")
+			add("DNS 监听 "+dnsListen, CheckOK, "")
 		}
 	}
 	if ip := sshClientIP(); ip != "" {
@@ -133,11 +164,10 @@ func checkListenable(addr string) error {
 func portBusyHint(host, portStr string) error {
 	var port int
 	fmt.Sscan(portStr, &port)
-	who := "其他程序"
+	msg := fmt.Sprintf("端口 %s 已被其他程序占用", portStr)
 	if o, ok := portowner.Find(port); ok {
-		who = o.Comm + fmt.Sprintf(" (pid %d)", o.PID)
+		msg = fmt.Sprintf("端口 %s 已被 %s (pid %d) 占用", portStr, o.Comm, o.PID)
 	}
-	msg := fmt.Sprintf("端口 %s 已被 %s 占用", portStr, who)
 	if host == "0.0.0.0" || host == "" || host == "::" {
 		if ip := lanIPv4(); ip != "" {
 			msg += fmt.Sprintf("；可改为只监听局域网地址 %s:%s", ip, portStr)
@@ -194,7 +224,7 @@ func (w *Workspace) EnableGateway(ctx context.Context) (time.Time, error) {
 		next.ExcludeAddrs = append(slices.Clone(next.ExcludeAddrs), ip)
 	}
 
-	st, err := hostSystem().Apply(ctx, next.IPv6, runtimeconfig.TunDevice)
+	st, err := hostSystem().Apply(ctx, next.IPv6, runtimeconfig.TunDevice, w.GatewayDNSListen())
 	if err != nil {
 		return time.Time{}, err
 	}
@@ -294,8 +324,8 @@ func (w *Workspace) UpdateGateway(ctx context.Context, fn func(*appsettings.Gate
 	fn(&next)
 	w.mutateSettings(func(s *appsettings.Settings) { s.Gateway = next })
 	if next.Enabled {
-		if next.IPv6 != prev.IPv6 {
-			// Forwarding for the other family has to follow the option.
+		if next.IPv6 != prev.IPv6 || next.DNSListen != prev.DNSListen {
+			// Forwarding and dnsmasq's upstream follow these options.
 			if err := w.reapplySystemLocked(ctx, next.IPv6); err != nil {
 				w.mutateSettings(func(s *appsettings.Settings) { s.Gateway = prev })
 				return err
@@ -313,7 +343,7 @@ func (w *Workspace) reapplySystemLocked(ctx context.Context, ipv6 bool) error {
 	if err := w.revertSystemLocked(ctx); err != nil {
 		return err
 	}
-	st, err := hostSystem().Apply(ctx, ipv6, runtimeconfig.TunDevice)
+	st, err := hostSystem().Apply(ctx, ipv6, runtimeconfig.TunDevice, w.GatewayDNSListen())
 	if err != nil {
 		return err
 	}
@@ -339,7 +369,7 @@ func (w *Workspace) PrepareGateway(ctx context.Context) error {
 	}
 	var st gatewaysys.State
 	if readJSON(w.sysStatePath(), &st) != nil {
-		st2, err := hostSystem().Apply(ctx, w.Settings().Gateway.IPv6, runtimeconfig.TunDevice)
+		st2, err := hostSystem().Apply(ctx, w.Settings().Gateway.IPv6, runtimeconfig.TunDevice, w.GatewayDNSListen())
 		if err != nil {
 			return err
 		}

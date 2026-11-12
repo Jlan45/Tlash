@@ -67,7 +67,11 @@ func applyGateway(root *yaml.Node, g appsettings.Gateway, mirror string) error {
 		setKey(root, "dns", dns)
 	}
 	setKey(dns, "enable", boolNode(true))
-	setKey(dns, "listen", strNode(g.DNSListen))
+	listen := g.DNSListen
+	if listen == "" {
+		listen = "0.0.0.0:53"
+	}
+	setKey(dns, "listen", strNode(listen))
 	if lookup(dns, "enhanced-mode") == nil {
 		setKey(dns, "enhanced-mode", strNode("fake-ip"))
 	}

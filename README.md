@@ -67,7 +67,16 @@ tlash --controller 127.0.0.1:9090 --secret <secret>
 
 - 53 端口被占用（如 systemd-resolved）时，环境检查会提示，把“DNS 监听”改为本机局域网 IP，例如 `192.168.1.2:53`
 - 出问题且界面用不了时，在本机控制台执行 `tlash gateway off` 立即关闭并还原
-- OpenWrt 主路由支持在后续版本提供
+
+## 用作 OpenWrt 主路由
+
+支持 OpenWrt 22.03 及以上（fw4 / nftables），架构 x86_64、arm64、armv5/6/7、mips、mipsle、riscv64。
+
+1. 安装：`wget -qO- https://raw.githubusercontent.com/Jlan45/Tlash/main/scripts/install.sh | sh`（会提示缺少的 `kmod-tun` 等依赖）
+2. 闪存小于约 40 MB 时，先在 `7` 设置 → 内核 把“存放位置”改为**压缩存放**（闪存只存 .gz，开机解压到内存）或**只放内存**（开机自动下载），再按 `D` 下载内核
+3. 添加订阅并启动后，在 设置 → 网关 按 `t` 开启
+
+开启网关时 Tlash 会通过 uci 把 dnsmasq 的上游改为 mihomo（`127.0.0.1#1053`），并为 TUN 网卡添加防火墙区域；关闭或卸载时按原样还原。局域网设备无需任何设置。
 
 ## 开发
 

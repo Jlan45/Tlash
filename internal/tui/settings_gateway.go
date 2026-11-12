@@ -104,10 +104,10 @@ func (p *settingsPanel) gatewayItems() []settingItem {
 		settingItem{label: "大陆 IP", value: cn, hint: "enter 切换", edit: func() tea.Cmd {
 			return p.updateGateway("大陆 IP 处理方式已切换", func(gw *appsettings.Gateway) { gw.BypassCN = !gw.BypassCN })
 		}},
-		settingItem{label: "DNS 监听", value: g.DNSListen, hint: "局域网设备把 DNS 指向本机时使用", edit: func() tea.Cmd {
+		settingItem{label: "DNS 监听", value: p.dnsListenLabel(), hint: p.dnsListenHint(), edit: func() tea.Cmd {
 			return showForm(newInputForm("DNS 监听地址", func(v []string) tea.Cmd {
 				return p.updateGateway("DNS 监听已修改", func(gw *appsettings.Gateway) { gw.DNSListen = v[0] })
-			}).addText("地址", g.DNSListen, "0.0.0.0:53", "53 端口被占用时可改为局域网 IP，如 192.168.1.2:53"))
+			}).addText("地址", g.DNSListen, p.sess.ws.GatewayDNSListen(), "留空使用默认值；53 端口被占用时可改为局域网 IP，如 192.168.1.2:53"))
 		}},
 		settingItem{label: "排除地址", value: exclude, hint: "这些地址不经过代理", edit: func() tea.Cmd {
 			return showForm(newInputForm("排除地址", func(v []string) tea.Cmd {
@@ -232,4 +232,19 @@ func (p *settingsPanel) confirmGateway(deadline time.Time) tea.Cmd {
 				return "已回滚", ws.RollbackGateway(ctx)
 			}, p.refresh(), sess.refreshAll())
 		})
+}
+
+func (p *settingsPanel) dnsListenLabel() string {
+	l := p.sess.ws.GatewayDNSListen()
+	if p.sess.ws.Settings().Gateway.DNSListen == "" {
+		l += styleDim.Render("（默认）")
+	}
+	return l
+}
+
+func (p *settingsPanel) dnsListenHint() string {
+	if p.sess.ws.IsOpenWrt() {
+		return "OpenWrt 上由 dnsmasq 转发到这里"
+	}
+	return "局域网设备把 DNS 指向本机时使用"
 }

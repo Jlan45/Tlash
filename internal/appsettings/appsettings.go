@@ -44,7 +44,8 @@ type Gateway struct {
 	Devices    []Device `yaml:"devices,omitempty"`
 	// BypassCN lets mainland-China IPs skip mihomo in the kernel (faster, but invisible to rules).
 	BypassCN bool `yaml:"bypass_cn"`
-	// DNSListen is where mihomo's DNS serves LAN clients pointed at this gateway.
+	// DNSListen is where mihomo's DNS listens; empty picks a platform default (OpenWrt
+	// forwards from dnsmasq to 127.0.0.1:1053, elsewhere LAN clients query 0.0.0.0:53).
 	DNSListen string `yaml:"dns_listen,omitempty"`
 	// ExcludeAddrs never enter the TUN (the SSH client that enabled the gateway is added here).
 	ExcludeAddrs []string `yaml:"exclude_addrs,omitempty"`
@@ -68,9 +69,6 @@ func (g Gateway) WithDefaults() Gateway {
 	if g.DeviceMode != DeviceModeSelected {
 		g.DeviceMode = DeviceModeAll
 	}
-	if g.DNSListen == "" {
-		g.DNSListen = "0.0.0.0:53"
-	}
 	return g
 }
 
@@ -86,7 +84,16 @@ type CoreSettings struct {
 	Channel CoreChannel `yaml:"channel"`
 	// Service is auto, systemd, systemd-user, openrc, procd or process.
 	Service string `yaml:"service"`
+	// Location is where the core binary lives: "" (data dir), "compressed" (gzip in the data
+	// dir, unpacked into RAM at boot) or "ram" (RAM only, downloaded at boot). For small flash.
+	Location string `yaml:"location,omitempty"`
 }
+
+const (
+	CoreInData     = ""
+	CoreCompressed = "compressed"
+	CoreRAMOnly    = "ram"
+)
 
 // Managed holds config keys Tlash forces onto every profile.
 // A nil field leaves the profile's own value in place.

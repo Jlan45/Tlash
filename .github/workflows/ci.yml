@@ -55,3 +55,37 @@ jobs:
         with:
           name: tlash-binaries
           path: dist/*
+
+  openwrt:
+    runs-on: ubuntu-latest
+    needs: test
+    env:
+      OPENWRT_IMAGE: openwrt/rootfs:x86-64-openwrt-24.10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: dnsmasq / firewall changes round-trip on real uci
+        run: |
+          CGO_ENABLED=0 go test -c -o owrt/gatewaysys.test ./internal/gatewaysys/
+          for pre in "" 'uci add_list dhcp.@dnsmasq[0].server=/corp.example/10.0.0.1; uci add_list dhcp.@dnsmasq[0].server=223.5.5.5; uci set dhcp.@dnsmasq[0].noresolv=0; uci commit dhcp;'; do
+            docker run --rm -v "$PWD/owrt:/t:ro" -e TLASH_TEST_REAL_UCI=1 "$OPENWRT_IMAGE" \
+              sh -c "mkdir -p /var/lock; $pre /t/gatewaysys.test -test.run TestRealUCIRoundTrip -test.v"
+          done
+
+      - name: Install and uninstall on OpenWrt
+        run: |
+          scripts/build-release.sh v0.0.0-ci
+          (cd dist && python3 -m http.server 18766 --bind 127.0.0.1 >/dev/null 2>&1 &)
+          sleep 1
+          docker run --rm --network host -v "$PWD/scripts/install.sh:/install.sh:ro" "$OPENWRT_IMAGE" sh -ec '
+            mkdir -p /var/lock
+            version=v0.0.0-ci base_url=http://127.0.0.1:18766 sh /install.sh
+            test "$(command -v tlash)" = /usr/bin/tlash
+            tlash version
+            tlash gateway check || true
+            sh /install.sh purge
+            ! test -e /usr/bin/tlash
+            ! test -e /etc/tlash'

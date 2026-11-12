@@ -18,8 +18,12 @@ warn() { printf '\033[33m警告:\033[0m %s\n' "$*" >&2; }
 die() { printf '\033[31m错误:\033[0m %s\n' "$*" >&2; exit 1; }
 
 is_root() { [ "$(id -u)" -eq 0 ]; }
+is_openwrt() { [ -f /etc/openwrt_release ]; }
 
-if is_root; then
+if is_root && is_openwrt; then
+	default_bindir=/usr/bin # /usr/local/bin isn't on OpenWrt's PATH
+	datadir=/etc/tlash
+elif is_root; then
 	default_bindir=/usr/local/bin
 	datadir=/etc/tlash
 else
@@ -47,14 +51,36 @@ fetch() {
 	fi
 }
 
+# little_endian reads EI_DATA from an ELF header (1 = little endian); uname -m says "mips"
+# for both endiannesses, and most routers (MT7621 etc.) are little endian.
+little_endian() {
+	for f in /bin/busybox /bin/sh; do
+		[ -f "$f" ] || continue
+		if command -v hexdump >/dev/null 2>&1; then
+			[ "$(hexdump -s 5 -n 1 -e '1/1 "%d"' "$f" 2>/dev/null)" = 2 ] && return 1
+			return 0
+		fi
+		if command -v od >/dev/null 2>&1; then
+			[ "$(od -An -tu1 -j5 -N1 "$f" 2>/dev/null | tr -d ' ')" = 2 ] && return 1
+			return 0
+		fi
+	done
+	return 0
+}
+
 detect_arch() {
 	[ "$(uname -s)" = Linux ] || die "Tlash 只支持 Linux"
 	case "$(uname -m)" in
 	x86_64 | amd64) echo amd64 ;;
 	aarch64 | arm64) echo arm64 ;;
 	armv7* | armv8l) echo armv7 ;;
+	armv6*) echo armv6 ;;
+	armv5*) echo armv5 ;;
 	i386 | i686) echo 386 ;;
-	*) die "不支持的架构: $(uname -m)（支持 amd64 / arm64 / armv7 / 386）" ;;
+	mips | mipsel | mipsle)
+		if little_endian; then echo mipsle; else echo mips; fi ;;
+	riscv64) echo riscv64 ;;
+	*) die "不支持的架构: $(uname -m)" ;;
 	esac
 }
 
@@ -115,14 +141,34 @@ install_tlash() {
 		;;
 	esac
 
+	if is_openwrt; then
+		openwrt_hints
+	fi
+
 	echo
 	info "数据目录：$datadir（已有配置会保留）"
 	if [ -n "$mirror" ]; then
 		info "首次运行后在「内核」页按 M 填入镜像 $mirror，再按 D 下载内核"
 	fi
-	echo "  运行 $cmd 打开管理界面，按概览页的引导：下载内核 → 添加订阅 → 启动"
+	echo "  运行 $cmd 打开管理界面，按“状态”面板的引导：下载内核 → 添加订阅 → 启动"
 	if ! is_root; then
 		echo "  非 root 安装：内核以用户级 systemd 服务或后台进程运行，不支持 TUN"
+	fi
+}
+
+# openwrt_hints checks what a router needs before the gateway can be turned on.
+openwrt_hints() {
+	pm="opkg update && opkg install"
+	command -v apk >/dev/null 2>&1 && pm="apk add"
+	if [ ! -e /dev/net/tun ] && ! grep -q '^tun ' /proc/modules 2>/dev/null; then
+		warn "未检测到 TUN 支持，作为网关前请安装：$pm kmod-tun"
+	fi
+	[ -x /sbin/fw4 ] || warn "未检测到 fw4：网关需要 OpenWrt 22.03 及以上"
+	# The core is about 30 MB; small flash should keep it compressed or in RAM.
+	avail=$(df -k "$datadir" 2>/dev/null | awk 'NR==2 {print $4}')
+	[ -n "$avail" ] || avail=$(df -k / 2>/dev/null | awk 'NR==2 {print $4}')
+	if [ -n "$avail" ] && [ "$avail" -lt 40960 ]; then
+		warn "闪存剩余 $((avail / 1024)) MB，内核约 30 MB：首次运行后在 设置 → 内核 把“存放位置”改为“压缩存放”或“只放内存”，再下载内核"
 	fi
 }
 
@@ -137,6 +183,10 @@ systemctl_maybe() {
 
 uninstall_tlash() {
 	purge="$1"
+	# Restore dnsmasq / firewall / forwarding changes before the binary disappears.
+	if [ -x "$bindir/tlash" ] && [ -d "$datadir" ]; then
+		"$bindir/tlash" --dir "$datadir" gateway off >/dev/null 2>&1 || true
+	fi
 	info "停止并移除服务"
 	systemctl_maybe disable --now tlash-mihomo.service tlash-tasks.timer
 	if is_root; then
@@ -161,6 +211,11 @@ uninstall_tlash() {
 		crontab -l 2>/dev/null | grep -v '# tlash-tasks:' | crontab - || true
 	fi
 	is_root && rm -f /etc/profile.d/tlash-proxy.sh
+	# The RAM copy of the core lives in /tmp/tlash-<first 8 hex of sha256(datadir)>, as in Tlash.
+	if command -v sha256sum >/dev/null 2>&1; then
+		ramdir="/tmp/tlash-$(printf %s "$datadir" | sha256sum | cut -c1-8)"
+		[ -d "$ramdir" ] && rm -rf "$ramdir"
+	fi
 	rm -f "$bindir/tlash"
 	if [ "$purge" = yes ]; then
 		rm -rf "$datadir"
