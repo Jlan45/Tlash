@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/Jlan45/Tlash/internal/mihomoapi"
+	"github.com/Jlan45/Tlash/internal/override"
 	"github.com/Jlan45/Tlash/internal/profile"
 	"github.com/Jlan45/Tlash/internal/workspace"
 )
@@ -388,5 +389,61 @@ func TestFlagsRenderAsLetters(t *testing.T) {
 	}
 	if _, node, _ := app.panels[1].(*groupsPanel).currentNode(); node != "🇸🇬新加坡02" {
 		t.Fatalf("underlying node name changed: %q", node)
+	}
+}
+
+// Panel actions must not shadow the shell's navigation keys, or they silently never run
+// (or navigation breaks), e.g. "g" is "jump to first row" on the side list.
+func TestActionKeysDontClashWithNavigation(t *testing.T) {
+	sideReserved := map[string]bool{}
+	for _, k := range []string{"up", "down", "j", "k", "g", "G", "home", "end", "pgup", "pgdown", "ctrl+u", "ctrl+d",
+		"enter", "esc", "/", "tab", "shift+tab", "left", "right", "h", "l", "q", "?", "x", "+", "_", "[", "]",
+		"0", "1", "2", "3", "4", "5", "6", "7", "8", "9"} {
+		sideReserved[k] = true
+	}
+	mainReserved := map[string]bool{"esc": true, "tab": true, "left": true, "right": true, "h": true, "l": true,
+		"q": true, "?": true, "x": true, "+": true, "_": true, "[": true, "]": true}
+
+	dir, _ := os.MkdirTemp("", "tlk")
+	defer os.RemoveAll(dir)
+	ws, err := workspace.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := New(Options{Client: ws.Client(), Workspace: ws, DelayTest: mihomoapi.DelayTest{URL: "http://x", Timeout: time.Second}})
+	defer app.Close()
+	app.sess.connected = true
+	app.broadcast(proxiesMsg{proxies: sampleProxies()})
+	app.broadcast(profilesMsg{profiles: []profile.Profile{{ID: "a", Name: "a", Kind: profile.KindRemote}}})
+	app.broadcast(overridesMsg{items: []override.Override{{ID: "o", Name: "o"}}})
+	app.broadcast(statusMsg{conns: []mihomoapi.Connection{{ID: "c"}}})
+	app.broadcast(rulesMsg{rules: []mihomoapi.Rule{{Type: "Match"}}})
+
+	check := func(where string, acts []action, reserved map[string]bool) {
+		seen := map[string]bool{}
+		for _, a := range acts {
+			if reserved[a.key] {
+				t.Errorf("%s: action %q (%s) uses a navigation key", where, a.key, a.desc)
+			}
+			if seen[a.key] {
+				t.Errorf("%s: key %q bound twice", where, a.key)
+			}
+			seen[a.key] = true
+		}
+	}
+	for _, p := range app.panels {
+		if sp, ok := p.(*settingsPanel); ok {
+			for i, c := range sp.categories {
+				sp.ls.cursor = i
+				check("设置/"+c.name, sp.actions(), sideReserved)
+				check("设置/"+c.name+"（主面板）", sp.mainActions(0), mainReserved)
+			}
+			continue
+		}
+		check(p.title(), p.actions(), sideReserved)
+		for tab, name := range p.tabs() {
+			// Main-panel actions may deliberately override a side action (t tests the node, not the group).
+			check(p.title()+"/"+name+"（主面板）", p.mainActions(tab), mainReserved)
+		}
 	}
 }

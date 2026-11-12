@@ -115,6 +115,20 @@ func notifyErr(prefix string, err error) tea.Cmd {
 type confirmMsg struct {
 	prompt string
 	onYes  func() tea.Cmd
+	// onNo, if set, runs when the user declines (n / esc).
+	onNo func() tea.Cmd
+}
+
+// askChoice is askConfirm with an action for "no" too.
+func askChoice(prompt string, onYes, onNo func() tea.Cmd) tea.Cmd {
+	return func() tea.Msg { return confirmMsg{prompt: prompt, onYes: onYes, onNo: onNo} }
+}
+
+// openMenuMsg shows an action menu popup.
+type openMenuMsg struct{ menu *actionMenu }
+
+func showMenu(title string, items []action) tea.Cmd {
+	return func() tea.Msg { return openMenuMsg{menu: &actionMenu{title: title, items: items}} }
 }
 
 func askConfirm(prompt string, onYes func() tea.Cmd) tea.Cmd {

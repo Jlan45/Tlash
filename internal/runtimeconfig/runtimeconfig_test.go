@@ -23,7 +23,7 @@ rules:
 `
 	port, lan := 7999, false
 	m := appsettings.Managed{MixedPort: &port, AllowLan: &lan, Secret: "s"}
-	out, err := Generate([]byte(profile), nil, m, "/etc/tlash/runtime/mihomo.sock")
+	out, err := Generate([]byte(profile), nil, m, nil, "/etc/tlash/runtime/mihomo.sock")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ rules:
 }
 
 func TestGenerateEnablesTCPController(t *testing.T) {
-	out, err := Generate([]byte(MinimalProfile), nil, appsettings.Managed{ExternalController: "127.0.0.1:9090", Secret: "x"}, "/s")
+	out, err := Generate([]byte(MinimalProfile), nil, appsettings.Managed{ExternalController: "127.0.0.1:9090", Secret: "x"}, nil, "/s")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestGenerateEnablesTCPController(t *testing.T) {
 }
 
 func TestGenerateRejectsNonMapping(t *testing.T) {
-	if _, err := Generate([]byte("- a\n- b\n"), nil, appsettings.Managed{}, "/s"); err == nil {
+	if _, err := Generate([]byte("- a\n- b\n"), nil, appsettings.Managed{}, nil, "/s"); err == nil {
 		t.Error("want error for list document")
 	}
 }
@@ -89,7 +89,7 @@ proxies: []
 		{Name: "c", Content: []byte("+rules:\n  - DOMAIN,b.com,REJECT\nsniffer!:\n  enable: true\n")},
 	}
 	port := 7890
-	out, err := Generate([]byte(profile), overrides, appsettings.Managed{MixedPort: &port}, "/s")
+	out, err := Generate([]byte(profile), overrides, appsettings.Managed{MixedPort: &port}, nil, "/s")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ proxies: []
 }
 
 func TestGenerateOverrideErrors(t *testing.T) {
-	_, err := Generate([]byte("rules: {a: 1}\nproxies: []\n"), []NamedOverride{{Name: "坏", Content: []byte("+rules: [x]\n")}}, appsettings.Managed{}, "/s")
+	_, err := Generate([]byte("rules: {a: 1}\nproxies: []\n"), []NamedOverride{{Name: "坏", Content: []byte("+rules: [x]\n")}}, appsettings.Managed{}, nil, "/s")
 	if err == nil || !strings.Contains(err.Error(), "坏") {
 		t.Errorf("want named error, got %v", err)
 	}
@@ -128,7 +128,7 @@ func TestGenerateOverrideErrors(t *testing.T) {
 func TestGenerateDNSKeepsUnmanagedKeys(t *testing.T) {
 	profile := "dns:\n  enable: false\n  nameserver-policy:\n    '+.corp': 10.0.0.1\n  fallback: [8.8.8.8]\nproxies: []\n"
 	m := appsettings.Managed{DNS: appsettings.DefaultDNS(), Sniffer: appsettings.DefaultSniffer()}
-	out, err := Generate([]byte(profile), nil, m, "/s")
+	out, err := Generate([]byte(profile), nil, m, nil, "/s")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +156,7 @@ func TestGenerateDNSKeepsUnmanagedKeys(t *testing.T) {
 
 func TestGenerateResources(t *testing.T) {
 	m := appsettings.Managed{ResourceMirror: "https://ghfast.top/", Dashboard: "zashboard"}
-	out, err := Generate([]byte(MinimalProfile), nil, m, "/s")
+	out, err := Generate([]byte(MinimalProfile), nil, m, nil, "/s")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +175,7 @@ func TestGenerateResources(t *testing.T) {
 // Profiles commonly set port: 7890 too; it must not steal the managed mixed port.
 func TestGenerateDropsInboundsOnMixedPort(t *testing.T) {
 	port := 7890
-	out, err := Generate([]byte("port: 7890\nsocks-port: 7891\nredir-port: 7890\nproxies: []\n"), nil, appsettings.Managed{MixedPort: &port}, "/s")
+	out, err := Generate([]byte("port: 7890\nsocks-port: 7891\nredir-port: 7890\nproxies: []\n"), nil, appsettings.Managed{MixedPort: &port}, nil, "/s")
 	if err != nil {
 		t.Fatal(err)
 	}

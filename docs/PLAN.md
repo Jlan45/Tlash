@@ -242,6 +242,8 @@ docs/
 - M3 与计划的差异：TUN 仍按计划放在 M5
 - **界面改版（2026-11-11）**：改为 lazydocker 式操作，详见 [TUI-REDESIGN.md](TUI-REDESIGN.md)。§4 的页面清单相应合并为 7 个面板：日志并入“状态”，内核 / 网络 / 设置三页并入“设置”的分类
 - **安装脚本提前完成**：`scripts/install.sh`（原属 M4），已发布 v0.1.0-alpha.1 供测试；M4 剩余：首次运行向导、自更新、离线包、多发行版容器测试
+- **路由器支持（2026-11-12 确认）**：顺序 R1 本机 / 旁路由 → R2 设备与分流 → R3 OpenWrt 主路由；代理范围黑名单与白名单都支持；大陆 IP 内核层放行与交给规则都支持；仅 IPv4 与 IPv4 + IPv6 作为选项；目标设备覆盖 x86、ARM、MIPS 路由器（R3 增加 mips / armv5 / armv6 构建与“内核放内存”）
+- **R1、R2 已完成**：基于 mihomo TUN（auto-route + auto-redirect + dns-hijack）；Tlash 负责环境检查、IP 转发（含 sysctl 持久化）、FORWARD 为 DROP 时插入放行规则、服务启动前恢复（ExecStartPre / start_pre）、SSH 客户端自动排除、60 秒确认否则由脱离会话的 guard 进程回滚、`tlash gateway off` 救急；局域网设备从 ARP 与 DHCP 租约发现，按 MAC 黑 / 白名单；大陆 IP 用 `route-exclude-address-set` 在内核层放行。真实网络效果需在 root 环境手工验证
 
 ## 12. 已知的不确定项
 

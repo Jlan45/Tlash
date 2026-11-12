@@ -34,6 +34,7 @@ type settingsStateMsg struct {
 	geoFiles   []geoFile
 	taskLog    []string
 	loginEnv   bool
+	gateway    gatewayState
 }
 
 type latestCoreMsg struct {
@@ -74,6 +75,8 @@ type settingsPanel struct {
 	checkingCore bool
 	progress     *atomic.Int64
 	lookup       string
+	// promptedFor is the pending gateway deadline already asked about.
+	promptedFor time.Time
 }
 
 func newSettingsPanel(sess *session) *settingsPanel {
@@ -82,6 +85,7 @@ func newSettingsPanel(sess *session) *settingsPanel {
 		p.categories = []settingsCategory{
 			{name: "内核", items: p.coreItems, actions: p.coreActions},
 			{name: "接管", items: func() []settingItem { return p.managedItems(managedRows) }, actions: p.managedActions},
+			{name: "网关", items: p.gatewayItems, actions: p.gatewayActions},
 			{name: "DNS", items: func() []settingItem { return p.takeoverItems(dnsRows, "dns") }, actions: func() []action { return p.takeoverActions("dns") }},
 			{name: "嗅探", items: func() []settingItem { return p.takeoverItems(snifferRows, "sniffer") }, actions: func() []action { return p.takeoverActions("sniffer") }},
 			{name: "资源", items: p.resourceItems, actions: p.resourceActions},
@@ -112,7 +116,7 @@ func (p *settingsPanel) refresh() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		st := settingsStateMsg{geoFiles: listGeoFiles(ws.RuntimeDir), taskLog: ws.TaskLogTail(5), loginEnv: workspace.LoginEnvEnabled()}
+		st := settingsStateMsg{geoFiles: listGeoFiles(ws.RuntimeDir), taskLog: ws.TaskLogTail(5), loginEnv: workspace.LoginEnvEnabled(), gateway: loadGatewayState(ws)}
 		if sched, err := ws.Scheduler(); err != nil {
 			st.schedErr = err
 		} else {
@@ -148,6 +152,14 @@ func (p *settingsPanel) update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case settingsStateMsg:
 		p.state = msg
+		// Reopened the TUI while a gateway enable is still unconfirmed: ask again.
+		if d := msg.gateway.pending; !d.IsZero() && !d.Equal(p.promptedFor) {
+			return p.confirmGateway(d)
+		}
+	case gatewayPendingMsg:
+		if !msg.deadline.Equal(p.promptedFor) {
+			return p.confirmGateway(msg.deadline)
+		}
 	case dnsQueryMsg:
 		p.lookup = renderDNSResult(msg)
 	case latestCoreMsg:
@@ -157,7 +169,7 @@ func (p *settingsPanel) update(msg tea.Msg) tea.Cmd {
 		}
 		return p.confirmDownload(msg.release)
 	case jobDoneMsg:
-		if strings.HasPrefix(msg.key, "tasks") || msg.key == "geo-update" {
+		if strings.HasPrefix(msg.key, "tasks") || msg.key == "geo-update" || msg.key == "gateway" {
 			return p.refresh()
 		}
 	}
@@ -450,14 +462,14 @@ func (p *settingsPanel) resourceItems() []settingItem {
 	}
 	var items []settingItem
 	if len(p.state.geoFiles) == 0 {
-		items = append(items, settingItem{label: "GEO 数据库", value: styleDim.Render("未下载（内核会在规则用到时自动下载）"), hint: "G 立即更新", edit: acts["G"]})
+		items = append(items, settingItem{label: "GEO 数据库", value: styleDim.Render("未下载（内核会在规则用到时自动下载）"), hint: "u 立即更新", edit: acts["u"]})
 	}
 	for i, f := range p.state.geoFiles {
 		label := ""
 		if i == 0 {
 			label = "GEO 数据库"
 		}
-		items = append(items, settingItem{label: label, value: fmt.Sprintf("%s  %s  %s", padRight(f.name, 18), padLeft(formatBytes(f.size), 9), styleDim.Render(agoLabel(f.modTime))), hint: "G 立即更新", edit: acts["G"]})
+		items = append(items, settingItem{label: label, value: fmt.Sprintf("%s  %s  %s", padRight(f.name, 18), padLeft(formatBytes(f.size), 9), styleDim.Render(agoLabel(f.modTime))), hint: "u 立即更新", edit: acts["u"]})
 	}
 	mirror := "直连 GitHub"
 	if settings.Managed.ResourceMirror != "" {
@@ -480,7 +492,7 @@ func (p *settingsPanel) resourceItems() []settingItem {
 func (p *settingsPanel) resourceActions() []action {
 	ws, sess := p.sess.ws, p.sess
 	return []action{
-		{"G", "立即更新 GEO 数据库", func() tea.Cmd {
+		{"u", "立即更新 GEO 数据库", func() tea.Cmd {
 			if !sess.core.running {
 				return notify("内核未运行，启动后才能更新 GEO 数据库")
 			}
@@ -540,7 +552,7 @@ func (p *settingsPanel) taskItems() []settingItem {
 	}
 	items := []settingItem{
 		{label: "状态", value: state, hint: "t 开关", edit: acts["t"]},
-		{label: "GEO 自动更新", value: geo, hint: "g 修改", edit: acts["g"]},
+		{label: "GEO 自动更新", value: geo, hint: "v 修改", edit: acts["v"]},
 		{label: "订阅自动更新", value: styleDim.Render("在 2 订阅 面板按 m 为每个订阅设置间隔")},
 	}
 	if len(st.taskLog) == 0 {
@@ -565,7 +577,7 @@ func (p *settingsPanel) taskActions() []action {
 				return "定时任务已" + map[bool]string{true: "开启", false: "关闭"}[on], ws.SetTasksEnabled(ctx, on)
 			})
 		}},
-		{"g", "GEO 自动更新间隔", func() tea.Cmd {
+		{"v", "GEO 自动更新间隔", func() tea.Cmd {
 			cur := strconv.FormatFloat(ws.Settings().Tasks.GeoUpdateInterval.Hours(), 'f', -1, 64)
 			return showForm(newInputForm("GEO 自动更新间隔", func(v []string) tea.Cmd {
 				hours, err := strconv.ParseFloat(v[0], 64)

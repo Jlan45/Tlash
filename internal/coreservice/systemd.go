@@ -47,6 +47,10 @@ func (s *systemd) unit() string {
 	if s.user {
 		target = "default.target"
 	}
+	pre := ""
+	if len(s.spec.PreStart) > 0 {
+		pre = "ExecStartPre=-" + s.spec.preStartLine() + "\n"
+	}
 	return fmt.Sprintf(`# Managed by Tlash; changes are overwritten.
 [Unit]
 Description=mihomo (managed by Tlash)
@@ -55,14 +59,14 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=%s
+%sExecStart=%s
 Restart=on-failure
 RestartSec=3
 LimitNOFILE=1048576
 
 [Install]
 WantedBy=%s
-`, s.spec.commandLine(), target)
+`, pre, s.spec.commandLine(), target)
 }
 
 func (s *systemd) Install(ctx context.Context) error {

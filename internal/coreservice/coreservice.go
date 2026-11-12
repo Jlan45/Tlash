@@ -42,6 +42,16 @@ type Spec struct {
 	ConfigPath string
 	LogPath    string // used where the init system doesn't capture output
 	PIDPath    string
+	// PreStart runs before the core and may fail without stopping it (gateway host setup).
+	PreStart []string
+}
+
+func (s Spec) preStartLine() string {
+	parts := make([]string, len(s.PreStart))
+	for i, a := range s.PreStart {
+		parts[i] = shellQuote(a)
+	}
+	return strings.Join(parts, " ")
 }
 
 func (s Spec) args() []string { return []string{"-d", s.HomeDir, "-f", s.ConfigPath} }

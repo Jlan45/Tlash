@@ -183,6 +183,9 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 	case openFormMsg:
 		a.form = msg.form
 		return nil
+	case openMenuMsg:
+		a.menu = msg.menu
+		return nil
 	case tea.KeyPressMsg:
 		return a.handleKey(msg)
 	case tea.PasteMsg:
@@ -238,6 +241,9 @@ func (a *App) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 			return c.onYes()
 		case "n", "N", "esc", "q":
 			a.confirm = nil
+			if c.onNo != nil {
+				return c.onNo()
+			}
 		}
 		return nil
 	case a.form != nil:

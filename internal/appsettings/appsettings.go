@@ -29,6 +29,49 @@ type Settings struct {
 	ActiveProfile string  `yaml:"active_profile"`
 	Managed       Managed `yaml:"managed"`
 	Tasks         Tasks   `yaml:"tasks"`
+	Gateway       Gateway `yaml:"gateway"`
+}
+
+// Gateway is transparent proxying for this machine and the LAN, built on mihomo's TUN.
+type Gateway struct {
+	Enabled bool `yaml:"enabled"`
+	// Stack is the TUN network stack: mixed, system or gvisor.
+	Stack string `yaml:"stack,omitempty"`
+	// IPv6 also proxies IPv6; otherwise IPv6 traffic bypasses the TUN.
+	IPv6 bool `yaml:"ipv6"`
+	// DeviceMode "all" proxies every LAN device except Devices; "selected" proxies only Devices.
+	DeviceMode string   `yaml:"device_mode,omitempty"`
+	Devices    []Device `yaml:"devices,omitempty"`
+	// BypassCN lets mainland-China IPs skip mihomo in the kernel (faster, but invisible to rules).
+	BypassCN bool `yaml:"bypass_cn"`
+	// DNSListen is where mihomo's DNS serves LAN clients pointed at this gateway.
+	DNSListen string `yaml:"dns_listen,omitempty"`
+	// ExcludeAddrs never enter the TUN (the SSH client that enabled the gateway is added here).
+	ExcludeAddrs []string `yaml:"exclude_addrs,omitempty"`
+}
+
+type Device struct {
+	MAC  string `yaml:"mac"`
+	Name string `yaml:"name,omitempty"`
+}
+
+const (
+	DeviceModeAll      = "all"
+	DeviceModeSelected = "selected"
+)
+
+// WithDefaults fills unset gateway fields.
+func (g Gateway) WithDefaults() Gateway {
+	if g.Stack == "" {
+		g.Stack = "mixed"
+	}
+	if g.DeviceMode != DeviceModeSelected {
+		g.DeviceMode = DeviceModeAll
+	}
+	if g.DNSListen == "" {
+		g.DNSListen = "0.0.0.0:53"
+	}
+	return g
 }
 
 // Tasks configures the periodic `tlash task run-due` job.
@@ -130,6 +173,7 @@ func Default() Settings {
 			TCPConcurrent: ptr(true),
 			Secret:        RandomSecret(),
 		},
+		Gateway: Gateway{BypassCN: true}.WithDefaults(),
 	}
 }
 

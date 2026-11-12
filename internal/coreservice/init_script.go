@@ -30,6 +30,7 @@ STOP=10
 USE_PROCD=1
 
 start_service() {
+	%s
 	procd_open_instance
 	procd_set_param command %s
 	procd_set_param respawn 3600 3 0
@@ -38,7 +39,7 @@ start_service() {
 	procd_set_param stderr 1
 	procd_close_instance
 }
-`, s.spec.commandLine())
+`, preStartShell(s.spec), s.spec.commandLine())
 	}
 	args := make([]string, 0, 4)
 	for _, a := range s.spec.args() {
@@ -59,7 +60,11 @@ depend() {
 	need net
 	after firewall
 }
-`, shellQuote(s.spec.CorePath), strings.ReplaceAll(strings.Join(args, " "), `"`, `\"`), shellQuote(s.spec.LogPath), shellQuote(s.spec.LogPath))
+
+start_pre() {
+	%s
+}
+`, shellQuote(s.spec.CorePath), strings.ReplaceAll(strings.Join(args, " "), `"`, `\"`), shellQuote(s.spec.LogPath), shellQuote(s.spec.LogPath), preStartShell(s.spec))
 }
 
 func (s *initScript) Install(ctx context.Context) error {
@@ -146,4 +151,12 @@ func (s *initScript) LogHint() string {
 		return "logread -e mihomo"
 	}
 	return s.spec.LogPath
+}
+
+// preStartShell is the PreStart command for init scripts, never failing the start.
+func preStartShell(spec Spec) string {
+	if len(spec.PreStart) == 0 {
+		return "true"
+	}
+	return spec.preStartLine() + " || true"
 }

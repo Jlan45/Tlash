@@ -59,7 +59,7 @@ func newRootCmd() *cobra.Command {
 				buildinfo.Version, buildinfo.Commit, buildinfo.Date, runtime.GOOS, runtime.GOARCH)
 		},
 	})
-	cmd.AddCommand(newTaskCmd(f), newEnvCmd(f))
+	cmd.AddCommand(newTaskCmd(f), newEnvCmd(f), newGatewayCmd(f))
 	return cmd
 }
 
@@ -78,6 +78,62 @@ func newTaskCmd(f *rootFlags) *cobra.Command {
 		},
 	})
 	return task
+}
+
+func newGatewayCmd(f *rootFlags) *cobra.Command {
+	gw := &cobra.Command{Use: "gateway", Short: "网关（透明代理）"}
+	open := func() (*workspace.Workspace, error) { return workspace.Open(f.dir) }
+	var token string
+	guard := &cobra.Command{
+		Use:    "guard",
+		Short:  "开启网关后等待确认，超时自动回滚（由 tlash 自动启动）",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			ws, err := open()
+			if err != nil {
+				return err
+			}
+			return ws.RunGatewayGuard(cmd.Context(), token)
+		},
+	}
+	guard.Flags().StringVar(&token, "token", "", "")
+	gw.AddCommand(guard,
+		&cobra.Command{
+			Use:    "prepare",
+			Short:  "内核启动前恢复网关所需的系统设置（服务启动钩子）",
+			Hidden: true,
+			Args:   cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, _ []string) error {
+				ws, err := open()
+				if err != nil {
+					return err
+				}
+				return ws.PrepareGateway(cmd.Context())
+			},
+		},
+		&cobra.Command{
+			Use:   "off",
+			Short: "关闭网关并还原系统设置（网关导致无法使用界面时救急用）",
+			Args:  cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, _ []string) error {
+				ws, err := open()
+				if err != nil {
+					return err
+				}
+				if _, pending := ws.PendingGateway(); pending {
+					err = ws.RollbackGateway(cmd.Context())
+				} else {
+					err = ws.DisableGateway(cmd.Context())
+				}
+				if err == nil {
+					fmt.Fprintln(cmd.OutOrStdout(), "网关已关闭")
+				}
+				return err
+			},
+		},
+	)
+	return gw
 }
 
 func newEnvCmd(f *rootFlags) *cobra.Command {

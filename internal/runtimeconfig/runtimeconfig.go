@@ -26,7 +26,7 @@ type NamedOverride struct {
 
 // Generate builds the runtime config: profile, then each override in order, then managed settings.
 // The profile's key order and comments are preserved.
-func Generate(profile []byte, overrides []NamedOverride, m appsettings.Managed, socketPath string) ([]byte, error) {
+func Generate(profile []byte, overrides []NamedOverride, m appsettings.Managed, gw *appsettings.Gateway, socketPath string) ([]byte, error) {
 	var doc yaml.Node
 	if err := yaml.Unmarshal(profile, &doc); err != nil {
 		return nil, fmt.Errorf("解析订阅配置失败: %w", err)
@@ -81,6 +81,11 @@ func Generate(profile []byte, overrides []NamedOverride, m appsettings.Managed, 
 
 	if err := applyResources(root, m); err != nil {
 		return nil, err
+	}
+	if gw != nil && gw.Enabled {
+		if err := applyGateway(root, *gw, m.ResourceMirror); err != nil {
+			return nil, err
+		}
 	}
 
 	// The control API is always Tlash's: a unix socket, plus TCP only when explicitly enabled.

@@ -107,6 +107,7 @@ func (w *Workspace) rebuildService() error {
 		ConfigPath: w.ConfigPath,
 		LogPath:    filepath.Join(w.RuntimeDir, "mihomo.log"),
 		PIDPath:    filepath.Join(w.RuntimeDir, "mihomo.pid"),
+		PreStart:   w.prepareCommand(),
 	})
 	if err != nil {
 		return err
@@ -186,7 +187,8 @@ func (w *Workspace) Generate() ([]byte, error) {
 		}
 		named = append(named, runtimeconfig.NamedOverride{Name: o.Name, Content: b})
 	}
-	return runtimeconfig.Generate(content, named, settings.Managed, w.SocketPath)
+	gw := settings.Gateway
+	return runtimeconfig.Generate(content, named, settings.Managed, &gw, w.SocketPath)
 }
 
 func (w *Workspace) applyLocked(ctx context.Context) error {
@@ -259,6 +261,10 @@ func (w *Workspace) RollbackConfig(ctx context.Context) error {
 func (w *Workspace) Start(ctx context.Context) error {
 	w.opMu.Lock()
 	defer w.opMu.Unlock()
+	return w.startLocked(ctx)
+}
+
+func (w *Workspace) startLocked(ctx context.Context) error {
 	if !w.CoreInstalled() {
 		return errors.New("尚未安装内核，请先在内核页下载")
 	}
@@ -339,4 +345,17 @@ func (w *Workspace) proxyForFetch(ctx context.Context) *url.URL {
 		return nil
 	}
 	return &url.URL{Scheme: "http", Host: "127.0.0.1:" + strconv.Itoa(cfg.MixedPort)}
+}
+
+// prepareCommand re-applies gateway host settings before the core starts (e.g. at boot);
+// it's a no-op while the gateway is off.
+func (w *Workspace) prepareCommand() []string {
+	bin, err := os.Executable()
+	if err != nil {
+		return nil
+	}
+	if resolved, err := filepath.EvalSymlinks(bin); err == nil {
+		bin = resolved
+	}
+	return []string{bin, "--dir", w.Dir, "gateway", "prepare"}
 }

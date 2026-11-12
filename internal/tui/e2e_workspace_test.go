@@ -168,3 +168,98 @@ func TestStaleCorePromptsCleanup(t *testing.T) {
 	}
 	_ = ws.Stop(ctx)
 }
+
+// Gateway: enable shows the keep-or-rollback prompt; n rolls back, y keeps it.
+func TestGatewayConfirmFlow(t *testing.T) {
+	bin := os.Getenv("TLASH_MIHOMO_BIN")
+	if bin == "" {
+		t.Skip("TLASH_MIHOMO_BIN not set")
+	}
+	scratch := t.TempDir()
+	procSys := filepath.Join(scratch, "proc")
+	for _, k := range []string{"net/ipv4/ip_forward", "net/ipv6/conf/all/forwarding"} {
+		p := filepath.Join(procSys, k)
+		_ = os.MkdirAll(filepath.Dir(p), 0o755)
+		_ = os.WriteFile(p, []byte("0\n"), 0o644)
+	}
+	defer workspace.FakeGatewayHost(procSys, filepath.Join(scratch, "sysctl.d"))()
+
+	dir, _ := os.MkdirTemp("", "tlg")
+	defer os.RemoveAll(dir)
+	ws, err := workspace.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	free := func() int {
+		ln, _ := net.Listen("tcp", "127.0.0.1:0")
+		defer ln.Close()
+		return ln.Addr().(*net.TCPAddr).Port
+	}
+	mixed, dns := free(), free()
+	_ = ws.UpdateSettings(func(s *appsettings.Settings) {
+		s.Core.Service = "process"
+		s.Managed.MixedPort = &mixed
+		s.Gateway.DNSListen = "127.0.0.1:" + strconv.Itoa(dns)
+	})
+	ctx := context.Background()
+	if _, err := ws.ImportCore(ctx, bin); err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Service().Uninstall(ctx)
+
+	app := New(Options{Client: ws.Client(), Workspace: ws, DelayTest: mihomoapi.DelayTest{URL: "http://127.0.0.1:1/", Timeout: time.Second}})
+	defer app.Close()
+	app.Update(teaWindowSize(130, 40))
+	run(app, app.sess.refreshAll())
+
+	// 设置 → 网关 (third category).
+	press(app, panelKey(t, app, "设置"), "down", "down")
+	run(app, app.cur().activate())
+	out := screen(app)
+	if !strings.Contains(out, "环境检查") || !strings.Contains(out, "未开启") {
+		t.Fatalf("gateway category:\n%s", out)
+	}
+	t.Logf("gateway category:\n%s", out)
+
+	press(app, "t")
+	if app.confirm == nil || !strings.Contains(screen(app), "按 n 立即回滚") {
+		t.Fatalf("no keep-or-rollback prompt:\n%s", screen(app))
+	}
+	press(app, "n")
+	if ws.Settings().Gateway.Enabled {
+		t.Fatal("n did not roll back")
+	}
+	if b, _ := os.ReadFile(filepath.Join(procSys, "net/ipv4/ip_forward")); string(b) != "0\n" {
+		t.Fatalf("ip_forward after rollback = %q", b)
+	}
+
+	press(app, "t", "y")
+	if !ws.Settings().Gateway.Enabled {
+		t.Fatal("y did not keep the gateway")
+	}
+	if _, pending := ws.PendingGateway(); pending {
+		t.Fatal("still pending after y")
+	}
+	press(app, "1")
+	if out = screen(app); !strings.Contains(out, "网关") || !strings.Contains(out, "已开启") {
+		t.Fatalf("overview lacks gateway state:\n%s", out)
+	}
+
+	// Add a device by hand via the a menu, then turn the gateway off.
+	press(app, panelKey(t, app, "设置"), "a", "m")
+	typeText(app, "AA:BB:CC:DD:EE:01")
+	press(app, "tab")
+	typeText(app, "tv")
+	press(app, "enter")
+	if g := ws.Settings().Gateway; len(g.Devices) != 1 || g.Devices[0].MAC != "aa:bb:cc:dd:ee:01" {
+		t.Fatalf("device not added: %+v", g.Devices)
+	}
+	if cfg, _ := os.ReadFile(ws.ConfigPath); !strings.Contains(string(cfg), "aa:bb:cc:dd:ee:01") {
+		t.Fatal("device not in running config")
+	}
+	press(app, "t", "y")
+	if ws.Settings().Gateway.Enabled {
+		t.Fatal("gateway still on after disabling")
+	}
+	_ = ws.Stop(ctx)
+}
