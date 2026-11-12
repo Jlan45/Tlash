@@ -10,6 +10,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/Jlan45/Tlash/internal/appsettings"
 	"github.com/Jlan45/Tlash/internal/mihomoapi"
 	"github.com/Jlan45/Tlash/internal/override"
 	"github.com/Jlan45/Tlash/internal/profile"
@@ -445,5 +446,111 @@ func TestActionKeysDontClashWithNavigation(t *testing.T) {
 			// Main-panel actions may deliberately override a side action (t tests the node, not the group).
 			check(p.title()+"/"+name+"（主面板）", p.mainActions(tab), mainReserved)
 		}
+	}
+}
+
+func TestTrafficChart(t *testing.T) {
+	var down, up []int64
+	for i := range 60 {
+		down = append(down, int64(i%20)<<18)
+		up = append(up, int64(i%7)<<16)
+	}
+	lines := trafficChart(down, up, 70, 6)
+	if len(lines) != 6 {
+		t.Fatalf("rows = %d", len(lines))
+	}
+	for _, l := range lines {
+		if w := ansi.StringWidth(l); w > 70 {
+			t.Errorf("width %d > 70", w)
+		}
+	}
+	plain := ansi.Strip(strings.Join(lines, "\n"))
+	if !strings.Contains(plain, "4.8 MB/s") || !strings.Contains(plain, "█") || !strings.Contains(ansi.Strip(lines[5]), "0 │") {
+		t.Errorf("chart:\n%s", plain)
+	}
+	// No data: just the axis, no panic.
+	if l := trafficChart(nil, nil, 30, 3); len(l) != 3 {
+		t.Fatal("empty chart")
+	}
+}
+
+func manyNodes(n int) map[string]mihomoapi.Proxy {
+	ps := map[string]mihomoapi.Proxy{}
+	var names []string
+	for i := range n {
+		name := fmt.Sprintf("HK 香港 %02d", i+1)
+		names = append(names, name)
+		ps[name] = mihomoapi.Proxy{Name: name, Type: "Vless", History: []mihomoapi.DelayHistory{{Delay: 40 + i*13%500}}}
+	}
+	ps["选择"] = mihomoapi.Proxy{Name: "选择", Type: "Selector", All: names, Now: names[0]}
+	ps["GLOBAL"] = mihomoapi.Proxy{Name: "GLOBAL", Type: "Selector", All: []string{"选择"}}
+	return ps
+}
+
+func TestNodeGrid(t *testing.T) {
+	ep, _ := mihomoapi.ParseEndpoint("127.0.0.1:1")
+	app := New(Options{Client: mihomoapi.New(ep, ""), DelayTest: mihomoapi.DelayTest{URL: "http://x", Timeout: time.Second}})
+	defer app.Close()
+	app.Update(teaWindowSize(120, 30))
+	app.broadcast(proxiesMsg{proxies: manyNodes(120)})
+	press(app, "2", "enter")
+	gp := app.cur().(*groupsPanel)
+	out := screen(app)
+	// Several nodes share a line.
+	multi := false
+	for _, l := range strings.Split(out, "\n") {
+		if strings.Count(l, "香港") >= 2 {
+			multi = true
+		}
+	}
+	if !multi || !strings.Contains(out, "第 1/") {
+		t.Fatalf("not a paged grid:\n%s", out)
+	}
+	if strings.Count(out, "t ") > 0 && strings.Contains(out, "整组测速") {
+		t.Errorf("shadowed side action still hinted:\n%s", out)
+	}
+	press(app, "down")
+	if gp.nodes.cursor != 1 {
+		t.Fatalf("down: cursor %d", gp.nodes.cursor)
+	}
+	press(app, "pgdown") // one column down the list
+	if gp.nodes.cursor != 1+gp.gridRows {
+		t.Fatalf("pgdown: cursor %d, rows %d", gp.nodes.cursor, gp.gridRows)
+	}
+	press(app, "G")
+	if out = screen(app); !strings.Contains(out, "HK 香港 120") {
+		t.Fatalf("last page lacks the last node:\n%s", out)
+	}
+	assertFits(t, app, "grid")
+}
+
+func TestAutoDelayTestOncePerGroup(t *testing.T) {
+	dir, _ := os.MkdirTemp("", "tla")
+	defer os.RemoveAll(dir)
+	ws, _ := workspace.Open(dir)
+	app := New(Options{Client: ws.Client(), Workspace: ws, DelayTest: mihomoapi.DelayTest{URL: "http://x", Timeout: time.Second}})
+	defer app.Close()
+	app.Update(teaWindowSize(120, 30))
+	app.broadcast(proxiesMsg{proxies: manyNodes(3)})
+	gp := app.panels[2].(*groupsPanel)
+	app.broadcast(statusMsg{})
+	if gp.testing["选择"] {
+		t.Fatal("tested while not focused")
+	}
+	press(app, panelKey(t, app, "代理组"))
+	app.broadcast(statusMsg{})
+	if !gp.testing["选择"] {
+		t.Fatal("focused stale group not tested")
+	}
+	delete(gp.testing, "选择") // as if the test finished
+	app.broadcast(statusMsg{})
+	if gp.testing["选择"] {
+		t.Fatal("retested within the window")
+	}
+	gp.lastTested["选择"] = time.Now().Add(-time.Hour)
+	_ = ws.UpdateSettings(func(s *appsettings.Settings) { s.AutoDelayTestOff = true })
+	app.broadcast(statusMsg{})
+	if gp.testing["选择"] {
+		t.Fatal("tested although auto test is off")
 	}
 }

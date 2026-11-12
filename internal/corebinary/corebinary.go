@@ -16,12 +16,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"runtime/debug"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/Jlan45/Tlash/internal/appsettings"
+	"github.com/Jlan45/Tlash/internal/buildinfo"
 )
 
 const (
@@ -78,7 +78,7 @@ func AssetArch() (string, error) {
 		return "arm64", nil
 	case "arm":
 		// Match the core to the ARM level Tlash itself was built for (5, 6 or 7).
-		return "armv" + buildSetting("GOARM", "7"), nil
+		return "armv" + buildinfo.Setting("GOARM", "7"), nil
 	case "386":
 		return "386", nil
 	case "mips", "mipsle":
@@ -392,18 +392,4 @@ func Rollback(paths Paths) error {
 		return err
 	}
 	return os.Rename(tmp, paths.Previous)
-}
-
-// buildSetting reads a GOARM / GOMIPS style setting recorded in the binary, e.g. "7".
-func buildSetting(key, fallback string) string {
-	if info, ok := debug.ReadBuildInfo(); ok {
-		for _, kv := range info.Settings {
-			if kv.Key == key && kv.Value != "" {
-				// GOARM may carry a float ABI suffix such as "7,softfloat".
-				v, _, _ := strings.Cut(kv.Value, ",")
-				return v
-			}
-		}
-	}
-	return fallback
 }

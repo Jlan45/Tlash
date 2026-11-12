@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -14,6 +15,9 @@ import (
 
 // Re-fetch every N status messages while focused; /proxies can be large on big subscriptions.
 const groupsRefreshEvery = 5
+
+// autoTestAfter is how stale a group's delays may get before focusing it tests them again.
+const autoTestAfter = 10 * time.Minute
 
 const (
 	groupsTabNodes = iota
@@ -43,10 +47,14 @@ type groupsPanel struct {
 	nodes   cursorList
 	// nodesFor is the group the node cursor belongs to; switching groups resets it.
 	nodesFor string
+	// lastTested is when each group was last delay-tested (manually or automatically).
+	lastTested map[string]time.Time
+	// gridRows is how many rows one grid column had at the last render (for page keys).
+	gridRows int
 }
 
 func newGroupsPanel(sess *session) *groupsPanel {
-	return &groupsPanel{sess: sess, testing: map[string]bool{}}
+	return &groupsPanel{sess: sess, testing: map[string]bool{}, lastTested: map[string]time.Time{}}
 }
 
 func (p *groupsPanel) title() string            { return "代理组" }
@@ -107,9 +115,15 @@ func (p *groupsPanel) update(msg tea.Msg) tea.Cmd {
 	case statusMsg:
 		if p.sess.activePanel == p.title() {
 			p.ticks++
+			var cmds []tea.Cmd
 			if p.ticks%groupsRefreshEvery == 0 {
-				return p.fetch()
+				cmds = append(cmds, p.fetch())
 			}
+			// Checked every tick, so only a group the cursor rests on gets tested.
+			if g, ok := p.current(); ok && p.autoTestOn() && time.Since(p.lastTested[g.Name]) > autoTestAfter {
+				cmds = append(cmds, p.testGroup(g.Name))
+			}
+			return tea.Batch(cmds...)
 		}
 	}
 	return nil
@@ -146,6 +160,7 @@ func (p *groupsPanel) testGroup(name string) tea.Cmd {
 		return nil
 	}
 	p.testing[name] = true
+	p.lastTested[name] = time.Now()
 	c, t := p.sess.client, p.delayTestFor(name)
 	return func() tea.Msg {
 		_, err := c.GroupDelay(context.Background(), name, t)
@@ -257,7 +272,21 @@ func (p *groupsPanel) mainKey(tab int, msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	if !ok {
 		return nil, false
 	}
-	return nil, p.nodes.key(msg, len(p.members(g)))
+	n := len(p.members(g))
+	// In the grid, page keys jump a whole column.
+	switch msg.String() {
+	case "pgdown", "ctrl+d":
+		p.nodes.move(max(p.gridRows, 1), n)
+		return nil, true
+	case "pgup", "ctrl+u":
+		p.nodes.move(-max(p.gridRows, 1), n)
+		return nil, true
+	}
+	return nil, p.nodes.key(msg, n)
+}
+
+func (p *groupsPanel) autoTestOn() bool {
+	return p.sess.ws == nil || !p.sess.ws.Settings().AutoDelayTestOff
 }
 
 func (p *groupsPanel) updateProviders() tea.Cmd {
@@ -318,12 +347,78 @@ func (p *groupsPanel) renderMain(tab, w, h int, focused bool) string {
 	for _, m := range members {
 		nameW = max(nameW, ansi.StringWidth(m))
 	}
-	nameW = min(nameW, 40, max(w-30, 8))
-	rows := make([]string, len(members))
-	for i, m := range members {
-		rows[i] = p.nodeRow(g, m, nameW)
+	bodyH := max(h-2, 1)
+	// Grid cells: mark, name, delay. Columns as wide as the longest name (capped at 24).
+	gridName := min(nameW, 24)
+	cellW := gridName + 10
+	cols := (w + 2) / (cellW + 2)
+	if cols < 2 || len(members) <= bodyH {
+		// One column fits everything (or there's no room for two): keep type and UDP.
+		p.gridRows = bodyH
+		nameW = min(nameW, 40, max(w-30, 8))
+		rows := make([]string, len(members))
+		for i, m := range members {
+			rows[i] = p.nodeRow(g, m, nameW)
+		}
+		return header + "\n\n" + strings.Join(p.nodes.renderRows(rows, w, bodyH, focused), "\n")
 	}
-	return header + "\n\n" + strings.Join(p.nodes.renderRows(rows, w, max(h-2, 1), focused), "\n")
+	return header + p.renderGrid(g, members, gridName, cellW, cols, bodyH, focused)
+}
+
+// renderGrid lays nodes out column by column, a page at a time, so ↑/↓ walk the list in
+// order and ←/→ stay free for switching tabs.
+func (p *groupsPanel) renderGrid(g mihomoapi.Proxy, members []string, nameW, cellW, cols, rows int, focused bool) string {
+	p.gridRows = rows
+	p.nodes.clamp(len(members))
+	perPage := rows * cols
+	page := p.nodes.cursor / perPage
+	start := page * perPage
+	end := min(start+perPage, len(members))
+	info := ""
+	if pages := (len(members) + perPage - 1) / perPage; pages > 1 {
+		info = styleDim.Render(fmt.Sprintf("  第 %d/%d 页", page+1, pages))
+	}
+	lines := make([]string, rows)
+	for r := 0; r < rows; r++ {
+		var cells []string
+		for c := 0; c < cols; c++ {
+			i := start + c*rows + r
+			if i >= end {
+				break
+			}
+			cell := p.nodeCell(g, members[i], nameW)
+			if i == p.nodes.cursor && focused {
+				cell = styleSelected.Render(padRight(ansi.Strip(cell), cellW))
+			} else {
+				cell = padRight(cell, cellW)
+			}
+			cells = append(cells, cell)
+		}
+		lines[r] = strings.Join(cells, "  ")
+	}
+	return info + "\n\n" + strings.Join(lines, "\n")
+}
+
+// nodeCell is a compact grid entry: mark, name and delay.
+func (p *groupsPanel) nodeCell(g mihomoapi.Proxy, name string, nameW int) string {
+	mark := "○"
+	if g.Now == name {
+		mark = styleAccent.Render("●")
+	}
+	return mark + " " + padRight(ansi.Truncate(name, nameW, "…"), nameW) + " " + padLeft(p.delayLabel(g, name), 7)
+}
+
+func (p *groupsPanel) delayLabel(g mihomoapi.Proxy, name string) string {
+	switch d, tested := p.proxies[name].LastDelay(); {
+	case p.testing[g.Name+"\x00"+name] || p.testing[g.Name]:
+		return styleWarn.Render("测速中")
+	case !tested:
+		return styleDim.Render("--")
+	case d <= 0:
+		return styleDim.Render("超时")
+	default:
+		return delayStyle(d).Render(fmt.Sprintf("%dms", d))
+	}
 }
 
 func (p *groupsPanel) nodeRow(g mihomoapi.Proxy, name string, nameW int) string {
@@ -336,17 +431,7 @@ func (p *groupsPanel) nodeRow(g mihomoapi.Proxy, name string, nameW int) string 
 	if node.UDP {
 		udp = "UDP"
 	}
-	var delay string
-	switch d, tested := node.LastDelay(); {
-	case p.testing[g.Name+"\x00"+name] || p.testing[g.Name]:
-		delay = styleWarn.Render("测速中")
-	case !tested:
-		delay = styleDim.Render("--")
-	case d <= 0:
-		delay = styleDim.Render("超时")
-	default:
-		delay = delayStyle(d).Render(fmt.Sprintf("%dms", d))
-	}
+	delay := p.delayLabel(g, name)
 	return " " + mark + " " + padRight(ansi.Truncate(name, nameW, "…"), nameW) + "  " +
 		styleDim.Render(padRight(node.Type, 12)+" "+udp) + "  " + delay
 }

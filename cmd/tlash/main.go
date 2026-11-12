@@ -37,9 +37,15 @@ func newRootCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:          "tlash",
 		Short:        "服务器上的 mihomo 终端管理器",
+		Long:         "服务器上的 mihomo 终端管理器。不带参数运行打开管理界面；下面的命令可在脚本和定时任务中使用。",
 		SilenceUsage: true,
-		Args:         cobra.NoArgs,
-		RunE:         func(cmd *cobra.Command, _ []string) error { return runTUI(cmd.Context(), f) },
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) > 0 {
+				return fmt.Errorf("未知命令 %q，运行 tlash --help 查看可用命令", args[0])
+			}
+			return nil
+		},
+		RunE: func(cmd *cobra.Command, _ []string) error { return runTUI(cmd.Context(), f) },
 	}
 	fl := cmd.PersistentFlags()
 	fl.StringVar(&f.dir, "dir", envOr("TLASH_DIR", workspace.DefaultDir()), "Tlash 数据目录（环境变量 TLASH_DIR）")
@@ -51,9 +57,10 @@ func newRootCmd() *cobra.Command {
 	cmd.Flags().StringVar(&f.logLevel, "log-level", "info", "日志页初始级别：debug / info / warning / error")
 
 	cmd.AddCommand(&cobra.Command{
-		Use:   "version",
-		Short: "显示版本",
-		Args:  cobra.NoArgs,
+		Use:     "version",
+		Short:   "显示版本",
+		GroupID: groupMaint,
+		Args:    cobra.NoArgs,
 		Run: func(cmd *cobra.Command, _ []string) {
 			fmt.Fprintf(cmd.OutOrStdout(), "tlash %s (%s, %s) %s/%s\n",
 				buildinfo.Version, buildinfo.Commit, buildinfo.Date, runtime.GOOS, runtime.GOARCH)
@@ -66,6 +73,16 @@ func newRootCmd() *cobra.Command {
 		Args:   cobra.NoArgs,
 		RunE:   func(cmd *cobra.Command, _ []string) error { return prestart(cmd.Context(), f.dir) },
 	})
+	cmd.AddCommand(opsCommands(f)...)
+	for _, c := range cmd.Commands() {
+		switch c.Name() {
+		case "env", "web":
+			c.GroupID = groupDaily
+		case "gateway", "task":
+			c.GroupID = groupMaint
+		}
+	}
+	localizeHelp(cmd)
 	return cmd
 }
 

@@ -245,6 +245,7 @@ docs/
 - **路由器支持（2026-11-12 确认）**：顺序 R1 本机 / 旁路由 → R2 设备与分流 → R3 OpenWrt 主路由；代理范围黑名单与白名单都支持；大陆 IP 内核层放行与交给规则都支持；仅 IPv4 与 IPv4 + IPv6 作为选项；目标设备覆盖 x86、ARM、MIPS 路由器（R3 增加 mips / armv5 / armv6 构建与“内核放内存”）
 - **R1、R2 已完成**：基于 mihomo TUN（auto-route + auto-redirect + dns-hijack）；Tlash 负责环境检查、IP 转发（含 sysctl 持久化）、FORWARD 为 DROP 时插入放行规则、服务启动前恢复（ExecStartPre / start_pre）、SSH 客户端自动排除、60 秒确认否则由脱离会话的 guard 进程回滚、`tlash gateway off` 救急；局域网设备从 ARP 与 DHCP 租约发现，按 MAC 黑 / 白名单；大陆 IP 用 `route-exclude-address-set` 在内核层放行。真实网络效果需在 root 环境手工验证
 - **R3 已完成**：新增 mips / mipsle（软浮点）、armv5、armv6、riscv64 构建，内核按 Tlash 自身的 GOARM / GOMIPS 选择资产；安装脚本识别 OpenWrt（装到 /usr/bin、mips 大小端、依赖与闪存提示，卸载前先还原网关）；网关在 OpenWrt 上通过 uci 让 dnsmasq 转发到 mihomo（默认 127.0.0.1:1053）并添加 fw4 防火墙区域，关闭时还原；内核存放位置可选数据目录 / 压缩存放 / 只放内存，开机由 `tlash prestart`（procd、systemd、OpenRC 启动钩子）恢复；CI 在 OpenWrt 24.10 容器中验证真实 uci 的修改与还原、安装与卸载。真实路由器上的透明代理效果仍需手工验证
+- **界面打磨（2026-11-13）**：节点多列网格（按列翻页，↑↓ 顺序移动，←→ 仍切换标签）；空面板缩成一行；概览流量图改为随高度伸缩的多行柱状图；提示栏用短标签、按优先级省略、隐藏被主面板覆盖的动作；停留在代理组上超过 10 分钟未测速时自动测速（可关闭）；命令行帮助全中文并分组；新增 status / start / stop / restart / mode / sub / core upgrade / update（自更新）/ uninstall，M4 的自更新与卸载随之完成
 
 ## 12. 已知的不确定项
 

@@ -447,10 +447,21 @@ func runAction(acts []action, key string) tea.Cmd {
 func (a *App) contextActions() []action {
 	p := a.cur()
 	var acts []action
+	shadowed := map[string]bool{}
 	if a.inMain {
-		acts = append(acts, p.mainActions(a.tabs[a.focus])...)
+		for _, ac := range p.mainActions(a.tabs[a.focus]) {
+			acts = append(acts, ac)
+			shadowed[ac.key] = true
+		}
 	}
-	return append(acts, p.actions()...)
+	// A main-panel action overrides the side action on the same key, so list only the one
+	// that will actually run.
+	for _, ac := range p.actions() {
+		if !shadowed[ac.key] {
+			acts = append(acts, ac)
+		}
+	}
+	return acts
 }
 
 func (a *App) focusPanel(idx int) tea.Cmd {
@@ -574,8 +585,8 @@ func (a *App) sideHeights(h int, rowCounts []int, onlyFocused bool) []int {
 			if i == a.focus {
 				continue
 			}
-			if u == 0 {
-				heights[i] = 1 // title line only
+			if u == 0 || n == 0 {
+				heights[i] = 1 // title line only; empty panels never need more
 			} else {
 				heights[i] = 2 + max(min(n, u), 1)
 			}
@@ -589,10 +600,13 @@ func (a *App) sideHeights(h int, rowCounts []int, onlyFocused bool) []int {
 	return heights
 }
 
-func (a *App) panelTitle(i int, p panel) string {
+func (a *App) panelTitle(i int, p panel, empty bool) string {
 	t := fmt.Sprintf("[%d]-%s", i+1, p.title())
-	if b := p.badge(); b != "" {
+	if b := p.badge(); b != "" && b != "0" {
 		t += " " + b
+	}
+	if empty && i != a.focus {
+		t += styleDim.Render(" · 无")
 	}
 	if f := p.list().filter.value(); f != "" && !p.list().filter.active {
 		t += styleAccent.Render(" /" + f)
@@ -653,7 +667,7 @@ func (a *App) renderSide(w, h int, onlyFocused bool) string {
 			body = append(body, styleDim.Render("（空）"))
 		}
 		a.geoms[i] = panelGeom{y0: y, y1: y + hh, rowStart: y + 1, offset: start}
-		boxes = append(boxes, drawBox(a.panelTitle(i, p), body, w, hh, focused))
+		boxes = append(boxes, drawBox(a.panelTitle(i, p, len(rows) == 0), body, w, hh, focused))
 		y += hh
 	}
 	side := fitBlock(strings.Join(boxes, "\n"), w, h-rateH)
@@ -702,23 +716,6 @@ func (a *App) renderMain(w, h int) string {
 }
 
 func (a *App) renderStatusBar() string {
-	hints := []hint{}
-	if a.inMain {
-		hints = append(hints, hint{"esc", "返回"})
-		if len(a.cur().tabs()) > 1 {
-			hints = append(hints, hint{"←/→", "标签"})
-		}
-	}
-	for _, ac := range a.contextActions() {
-		hints = append(hints, hint{ac.key, ac.desc})
-	}
-	hints = shortHints(hints, 5)
-	if len(a.cur().tabs()) > 1 && !a.inMain {
-		hints = append(hints, hint{"[ ]", "标签"})
-	}
-	hints = append(hints, hint{"x", "菜单"}, hint{"?", "帮助"})
-	left := renderHints(hints)
-
 	var right string
 	switch {
 	case a.note != nil && a.note.isErr:
@@ -728,17 +725,72 @@ func (a *App) renderStatusBar() string {
 	case len(a.sess.busy) > 0:
 		right = styleWarn.Render(spinnerFrames[a.frame%len(spinnerFrames)] + " " + busySummary(a.sess.busy))
 	}
-	leftW, rightW := ansi.StringWidth(left), ansi.StringWidth(right)
-	if leftW+rightW+2 > a.width {
-		// Notifications win over hints on narrow terminals.
-		left = ansi.Truncate(left, max(a.width-rightW-2, 0), "…")
-		leftW = ansi.StringWidth(left)
-		if leftW+rightW+2 > a.width {
-			right = ansi.Truncate(right, max(a.width-leftW-2, 0), "…")
-			rightW = ansi.StringWidth(right)
+	rightW := ansi.StringWidth(right)
+	if rightW > a.width-20 {
+		// Notifications win, but keep room for the essential keys.
+		right = ansi.Truncate(right, max(a.width-20, 0), "…")
+		rightW = ansi.StringWidth(right)
+	}
+
+	// The tail is always shown; action hints fill the remaining width in priority order and
+	// are dropped whole from the end rather than cut mid-word.
+	var tail []hint
+	if len(a.cur().tabs()) > 1 {
+		if a.inMain {
+			tail = append(tail, hint{"←/→", "标签"})
+		} else {
+			tail = append(tail, hint{"[ ]", "标签"})
 		}
 	}
+	tail = append(tail, hint{"x", "全部操作"}, hint{"?", "帮助"})
+	var head []hint
+	if a.inMain {
+		head = append(head, hint{"esc", "返回"})
+	}
+	budget := a.width - rightW - 2 - ansi.StringWidth(renderHints(tail))
+	for _, ac := range a.contextActions() {
+		h := hint{ac.key, hintLabel(ac.desc)}
+		if ansi.StringWidth(renderHints(append(head, h)))+2 > budget {
+			break
+		}
+		head = append(head, h)
+	}
+	left := renderHints(append(head, tail...))
+	leftW := ansi.StringWidth(left)
+	if leftW+rightW+1 > a.width {
+		left = ansi.Truncate(left, max(a.width-rightW-1, 0), "")
+		leftW = ansi.StringWidth(left)
+	}
 	return left + strings.Repeat(" ", max(a.width-leftW-rightW, 1)) + right
+}
+
+// hintShort maps long action descriptions to status-bar labels; the full text stays in the
+// x menu and ? help.
+var hintShort = map[string]string{
+	"修改名称 / 链接 / UA / 更新间隔": "修改",
+	"开启 / 关闭网关":             "开关网关",
+	"临时停用 / 启用此规则":          "停用/启用",
+	"作用范围：全部订阅 / 仅当前订阅":     "作用范围",
+	"选中项改用订阅自带值":            "用订阅值",
+	"切换稳定版 / 预览版":           "切换通道",
+	"在线更新 Web 面板到最新版":       "更新面板",
+	"GEO 自动更新间隔":            "GEO 间隔",
+	"立即更新 GEO 数据库":          "更新 GEO",
+	"资源下载走镜像":               "镜像",
+	"全部代理组测速":               "全部测速",
+	"更新全部代理集":               "更新代理集",
+}
+
+// hintLabel shortens an action description for the status bar: an explicit short form,
+// else the text before any parenthetical, without the filler "此".
+func hintLabel(desc string) string {
+	if s, ok := hintShort[desc]; ok {
+		return s
+	}
+	if i := strings.Index(desc, "（"); i > 0 {
+		desc = desc[:i]
+	}
+	return strings.ReplaceAll(desc, "此", "")
 }
 
 func (a *App) renderHelp() string {

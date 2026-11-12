@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -210,15 +211,14 @@ func (p *statusPanel) overview(w, h int) string {
 		row("出口 IP", styleDim.Render("按 i 检测（经 "+exitIPService+"）"))
 	}
 
-	// Graphs use whatever vertical space remains.
+	// The chart takes whatever vertical space remains.
 	used := strings.Count(b.String(), "\n")
-	graphW := max(w-1, 10)
-	if h-used >= 7 {
+	if chartH := min(h-used-3, 14); chartH >= 3 {
 		b.WriteString("\n")
-		b.WriteString(styleDim.Render(fmt.Sprintf("下行  峰值 %s", formatSpeed(peak(s.downHistory, graphW)))) + "\n")
-		b.WriteString(styleOK.Render(sparkline(s.downHistory, graphW)) + "\n\n")
-		b.WriteString(styleDim.Render(fmt.Sprintf("上行  峰值 %s", formatSpeed(peak(s.upHistory, graphW)))) + "\n")
-		b.WriteString(styleAccent.Render(sparkline(s.upHistory, graphW)) + "\n")
+		for _, l := range trafficChart(s.downHistory, s.upHistory, w, chartH) {
+			b.WriteString(l + "\n")
+		}
+		b.WriteString(strings.Repeat(" ", 10) + styleOK.Render("■ 下行") + "  " + styleAccent.Render("■ 上行") + styleDim.Render(fmt.Sprintf("  最近 %s", formatDuration(time.Duration(min(len(s.downHistory), w-10))*time.Second))) + "\n")
 	}
 	return b.String()
 }
@@ -328,17 +328,6 @@ func onOff(b bool) string {
 		return styleOK.Render("开")
 	}
 	return styleDim.Render("关")
-}
-
-func peak(samples []int64, window int) int64 {
-	if len(samples) > window {
-		samples = samples[len(samples)-window:]
-	}
-	var m int64
-	for _, s := range samples {
-		m = max(m, s)
-	}
-	return m
 }
 
 func gatewaySummary(g appsettings.Gateway) string {

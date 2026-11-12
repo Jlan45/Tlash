@@ -30,6 +30,8 @@ type Settings struct {
 	Managed       Managed `yaml:"managed"`
 	Tasks         Tasks   `yaml:"tasks"`
 	Gateway       Gateway `yaml:"gateway"`
+	// AutoDelayTestOff stops the TUI from delay-testing a proxy group when it's shown.
+	AutoDelayTestOff bool `yaml:"auto_delay_test_off,omitempty"`
 }
 
 // Gateway is transparent proxying for this machine and the LAN, built on mihomo's TUN.

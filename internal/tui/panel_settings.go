@@ -641,7 +641,18 @@ func (p *settingsPanel) envItems() []settingItem {
 
 func (p *settingsPanel) toolItems() []settingItem {
 	c := p.sess.client
-	return []settingItem{
+	var items []settingItem
+	if ws := p.sess.ws; ws != nil {
+		items = append(items, settingItem{label: "自动测速", value: onOff(!ws.Settings().AutoDelayTestOff),
+			hint: "代理组面板停在某个组上时，超过 10 分钟没测过就自动测速；enter 切换", edit: func() tea.Cmd {
+				off := !ws.Settings().AutoDelayTestOff
+				if err := ws.UpdateSettings(func(s *appsettings.Settings) { s.AutoDelayTestOff = off }); err != nil {
+					return notifyErr("保存失败", err)
+				}
+				return notify("自动测速已" + map[bool]string{true: "关闭", false: "开启"}[off])
+			}})
+	}
+	return append(items, []settingItem{
 		{label: "DNS 查询", value: styleDim.Render("通过内核解析域名，结果反映当前 DNS 配置"), edit: func() tea.Cmd {
 			return showForm(newInputForm("DNS 查询", func(v []string) tea.Cmd {
 				name, qtype := v[0], strings.ToUpper(v[1])
@@ -660,7 +671,7 @@ func (p *settingsPanel) toolItems() []settingItem {
 		{label: "清空 DNS 缓存", value: "", edit: func() tea.Cmd {
 			return apiCall("清空失败", "已清空 DNS 缓存", func(ctx context.Context) error { return c.FlushDNS(ctx) })
 		}},
-	}
+	}...)
 }
 
 func renderDNSResult(msg dnsQueryMsg) string {

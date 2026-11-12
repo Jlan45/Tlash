@@ -9,3 +9,6 @@ import "embed"
 //
 //go:embed assets
 var assets embed.FS
+
+// Lite reports whether this is a lite build (selects the matching asset when self-updating).
+const Lite = false

@@ -63,6 +63,21 @@ tlash --controller /path/to/mihomo.sock
 tlash --controller 127.0.0.1:9090 --secret <secret>
 ```
 
+## 命令行
+
+不带参数运行 `tlash` 打开管理界面；以下命令可用于脚本和定时任务（失败时返回非零）：
+
+| 命令 | 作用 |
+|---|---|
+| `tlash status` | 内核、订阅流量与到期、模式与端口、网关、速率 |
+| `tlash start` / `stop` / `restart` | 启停内核（`restart` 会重新生成配置） |
+| `tlash mode rule\|global\|direct` | 切换出站模式 |
+| `tlash sub list` / `update [名称]` / `use 名称` / `add 链接` | 订阅管理，`update` 不带名称时更新全部 |
+| `tlash core upgrade [--channel alpha]` | 下载最新内核，运行中自动重启 |
+| `tlash update` | 升级 Tlash 自身（保持标准版 / 精简版，校验 sha256） |
+| `tlash uninstall [--purge]` | 卸载；`--purge` 同时删除数据 |
+| `tlash web` / `tlash env` / `tlash gateway check\|off` | 面板地址 / 代理环境变量 / 网关检查与救急关闭 |
+
 ## Web 面板
 
 在 设置 → 资源 → Web 面板 按 `w` 选择 zashboard（标准版内置，选择后直接释放，无需访问 GitHub；`P` 在线更新到最新版）或 metacubexd（在线下载），并在 设置 → 接管 开启 TCP 控制接口（`127.0.0.1:9090` 仅本机，`0.0.0.0:9090` 局域网可访问）。然后运行：
