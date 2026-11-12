@@ -13,6 +13,7 @@ import (
 
 	"github.com/Jlan45/Tlash/internal/appsettings"
 	"github.com/Jlan45/Tlash/internal/corebinary"
+	"github.com/Jlan45/Tlash/internal/webui"
 )
 
 // mutateSettings changes in-memory settings without saving.
@@ -204,4 +205,30 @@ func (w *Workspace) FreeSpace() int64 {
 		return -1
 	}
 	return int64(st.Bavail) * int64(st.Bsize)
+}
+
+// DashboardDir is where mihomo serves the selected dashboard from (external-ui: ui).
+func (w *Workspace) DashboardDir(name string) string {
+	return filepath.Join(w.RuntimeDir, "ui", name)
+}
+
+// EnsureDashboard extracts the embedded zashboard when it's selected and missing or older
+// than the one this Tlash carries. A directory without Tlash's stamp came from an online
+// update and is left alone.
+func (w *Workspace) EnsureDashboard() error {
+	ver, ok := webui.Embedded()
+	if !ok || w.Settings().Managed.Dashboard != webui.Name {
+		return nil
+	}
+	dir := w.DashboardDir(webui.Name)
+	if _, err := os.Stat(dir); err == nil {
+		installed := webui.InstalledVersion(dir)
+		if installed == "" || installed == ver {
+			return nil
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+		return err
+	}
+	return webui.Extract(dir)
 }

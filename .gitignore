@@ -1,3 +1,6 @@
 /dist/
 /tlash
 tlash-logs-*.log
+/internal/webui/assets/zashboard.zip
+/internal/webui/assets/zashboard.version
+/internal/webui/assets/LICENSE-zashboard

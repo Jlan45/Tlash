@@ -16,10 +16,11 @@ import (
 	"github.com/Jlan45/Tlash/internal/appsettings"
 	"github.com/Jlan45/Tlash/internal/corebinary"
 	"github.com/Jlan45/Tlash/internal/mihomoapi"
+	"github.com/Jlan45/Tlash/internal/webui"
 	"github.com/Jlan45/Tlash/internal/workspace"
 )
 
-var dashboards = []string{"", "metacubexd", "zashboard"}
+var dashboards = []string{"", "zashboard", "metacubexd"}
 
 type geoFile struct {
 	name    string
@@ -486,7 +487,7 @@ func (p *settingsPanel) resourceItems() []settingItem {
 	}
 	return append(items,
 		settingItem{label: "资源下载", value: mirror, hint: "m 切换（使用内核的下载镜像）", edit: acts["m"]},
-		settingItem{label: "Web 面板", value: panel, hint: "w 切换", edit: acts["w"]},
+		settingItem{label: "Web 面板", value: panel, hint: "w 切换 · P 在线更新到最新版 · 访问地址运行 tlash web 查看", edit: acts["w"]},
 	)
 }
 
@@ -517,9 +518,32 @@ func (p *settingsPanel) resourceActions() []action {
 			return applyManaged(sess, map[bool]string{true: "资源下载已改走镜像", false: "资源下载已改为直连"}[mirror != ""],
 				func(m *appsettings.Managed) { m.ResourceMirror = mirror })
 		}},
+		{"P", "在线更新 Web 面板到最新版", func() tea.Cmd {
+			name := ws.Settings().Managed.Dashboard
+			if name == "" {
+				return notify("还没有选择 Web 面板")
+			}
+			if !sess.core.running {
+				return notify("内核未运行，启动后才能在线更新面板")
+			}
+			return sess.job("ui-update", "在线更新面板", func(ctx context.Context) (string, error) {
+				if err := ws.Client().UpgradeUI(ctx); err != nil {
+					return "", err
+				}
+				// No longer the embedded copy: don't let a later start swap it back.
+				webui.ClearStamp(ws.DashboardDir(name))
+				return name + " 已更新到最新版", nil
+			}, p.refresh())
+		}},
 		{"w", "切换 Web 面板", func() tea.Cmd {
 			next := dashboards[(slices.Index(dashboards, ws.Settings().Managed.Dashboard)+1)%len(dashboards)]
 			apply := applyManaged(sess, "Web 面板："+dashboardLabel(next), func(m *appsettings.Managed) { m.Dashboard = next })
+			if _, embedded := webui.Embedded(); next == webui.Name && embedded {
+				// Built in: unpack it now instead of downloading.
+				return tea.Sequence(apply, sess.job("ui-update", "释放内置面板", func(ctx context.Context) (string, error) {
+					return "", ws.EnsureDashboard()
+				}, p.refresh()))
+			}
 			if next == "" || !sess.core.running {
 				return apply
 			}
@@ -671,10 +695,15 @@ func listGeoFiles(dir string) []geoFile {
 }
 
 func dashboardLabel(d string) string {
-	if d == "" {
+	switch d {
+	case "":
 		return "不安装"
+	case webui.Name:
+		if v, ok := webui.Embedded(); ok {
+			return d + "（内置 " + v + "）"
+		}
 	}
-	return d
+	return d + "（在线下载）"
 }
 
 var coreLocations = []string{appsettings.CoreInData, appsettings.CoreCompressed, appsettings.CoreRAMOnly}

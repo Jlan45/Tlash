@@ -275,6 +275,10 @@ func (w *Workspace) startLocked(ctx context.Context) error {
 	if err := w.EnsureCore(ctx); err != nil {
 		return err
 	}
+	// A missing ui dir would make mihomo download the dashboard from GitHub instead.
+	if err := w.EnsureDashboard(); err != nil {
+		return err
+	}
 	if running, _ := w.Service().Running(ctx); running {
 		return nil
 	}
@@ -311,6 +315,9 @@ func (w *Workspace) Restart(ctx context.Context) error {
 	w.opMu.Lock()
 	defer w.opMu.Unlock()
 	// Regenerate first, so a restart also picks up profile or Tlash changes (e.g. after an upgrade).
+	if err := w.EnsureDashboard(); err != nil {
+		return err
+	}
 	cfg, err := w.writeConfigLocked(ctx)
 	if err != nil {
 		return err

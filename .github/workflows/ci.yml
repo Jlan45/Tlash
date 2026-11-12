@@ -49,8 +49,12 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - name: Cross-compile
-        run: scripts/build-release.sh "0.0.0-ci+${GITHUB_SHA::7}"
+      - name: Cross-compile (lite builds UPX-compressed)
+        run: UPX_BIN="$(scripts/fetch-upx.sh)" scripts/build-release.sh "0.0.0-ci+${GITHUB_SHA::7}"
+      - name: Run every build under qemu-user
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user-static >/dev/null
+          scripts/smoke-test-release.sh
       - uses: actions/upload-artifact@v4
         with:
           name: tlash-binaries

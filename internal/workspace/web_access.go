@@ -10,12 +10,15 @@ import (
 	"strings"
 
 	"github.com/Jlan45/Tlash/internal/runtimeconfig"
+	"github.com/Jlan45/Tlash/internal/webui"
 )
 
 // WebAccess describes how to reach the web dashboard served on the TCP controller.
 type WebAccess struct {
 	Dashboard  string // metacubexd / zashboard; empty when none is configured
 	Downloaded bool
+	// Source is "内置 vX" for the embedded copy, "在线下载" otherwise.
+	Source     string
 	Controller string // the external-controller listen address
 	Secret     string
 	// URLs open the dashboard directly; empty when the controller is loopback-only.
@@ -99,8 +102,15 @@ func (w *Workspace) WebAccess() WebAccess {
 	if acc.Dashboard == "" {
 		acc.Problems = append(acc.Problems, "还没有选择 Web 面板：在 设置 → 资源 → Web 面板 按 w 选择 metacubexd 或 zashboard")
 	} else {
-		_, err := os.Stat(filepath.Join(w.RuntimeDir, "ui", acc.Dashboard, "index.html"))
+		dir := w.DashboardDir(acc.Dashboard)
+		_, err := os.Stat(filepath.Join(dir, "index.html"))
 		acc.Downloaded = err == nil
+		acc.Source = "在线下载"
+		if v := webui.InstalledVersion(dir); v != "" {
+			acc.Source = "内置 " + v
+		} else if _, embedded := webui.Embedded(); !acc.Downloaded && embedded && acc.Dashboard == webui.Name {
+			acc.Source = "内置，启动内核时释放"
+		}
 		if !acc.Downloaded {
 			acc.Problems = append(acc.Problems, "面板还没下载：启动内核后会自动下载（访问不了 GitHub 时在 设置 → 资源 开启镜像）")
 		}

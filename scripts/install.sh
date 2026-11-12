@@ -3,15 +3,18 @@
 #   curl -fsSL https://raw.githubusercontent.com/Jlan45/Tlash/main/scripts/install.sh | sh
 #   curl -fsSL <url> | mirror=https://ghfast.top/ sh      # download via a GitHub mirror
 #   curl -fsSL <url> | version=v0.1.0 sh                  # pin a release
+#   curl -fsSL <url> | variant=lite sh                    # no built-in web dashboard (small flash)
 #   curl -fsSL <url> | sh -s uninstall                    # remove Tlash, keep data
 #   curl -fsSL <url> | sh -s purge                        # remove Tlash and its data
 #
-# Env: mirror, version, bindir (install location of the tlash binary), base_url (testing).
+# Env: mirror, version, variant (auto|full|lite), bindir (install location of the tlash
+# binary), base_url (testing).
 set -eu
 
 REPO="Jlan45/Tlash"
 mirror="${mirror:-}"
 version="${version:-}"
+variant="${variant:-auto}"
 
 info() { printf '\033[36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[33m警告:\033[0m %s\n' "$*" >&2; }
@@ -112,15 +115,43 @@ verify_checksum() {
 	fi
 }
 
+# free_kb is the free space where Tlash will live (the overlay on OpenWrt).
+free_kb() {
+	for d in "$datadir" /overlay /; do
+		[ -d "$d" ] || continue
+		df -k "$d" 2>/dev/null | awk 'NR==2 {print $4; exit}'
+		return
+	done
+}
+
+# choose_variant picks lite (no built-in dashboard, ~3 MB smaller) for routers short on flash.
+choose_variant() {
+	case "$variant" in
+	full | lite) return ;;
+	auto) ;;
+	*) die "variant 只能是 auto / full / lite" ;;
+	esac
+	variant=full
+	if is_openwrt; then
+		avail=$(free_kb)
+		if [ -n "$avail" ] && [ "$avail" -lt 32768 ]; then
+			variant=lite
+			info "闪存剩余 $((avail / 1024)) MB，安装精简版（不含内置 Web 面板，可在线下载）"
+		fi
+	fi
+}
+
 install_tlash() {
 	arch=$(detect_arch)
+	choose_variant
 	workdir=$(mktemp -d)
 	trap 'rm -rf "$workdir"' EXIT INT TERM
 	resolve_version
 	asset="tlash-linux-$arch.tar.gz"
+	[ "$variant" = lite ] && asset="tlash-lite-linux-$arch.tar.gz"
 	base="${base_url:-$(mirrored "https://github.com/$REPO/releases/download/$version")}"
 
-	info "下载 Tlash $version ($arch)"
+	info "下载 Tlash $version ($arch, $variant)"
 	fetch "$base/$asset" "$workdir/$asset" || die "下载失败: $base/$asset"
 	fetch "$base/checksums.txt" "$workdir/checksums.txt" || die "下载校验文件失败"
 	verify_checksum "$workdir/$asset" "$workdir/checksums.txt"

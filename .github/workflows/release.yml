@@ -17,8 +17,12 @@ jobs:
           go-version-file: go.mod
       - name: Test
         run: go test ./...
-      - name: Cross-compile
-        run: scripts/build-release.sh "${GITHUB_REF_NAME}"
+      - name: Cross-compile (lite builds UPX-compressed)
+        run: UPX_BIN="$(scripts/fetch-upx.sh)" scripts/build-release.sh "${GITHUB_REF_NAME}"
+      - name: Run every build under qemu-user
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user-static >/dev/null
+          scripts/smoke-test-release.sh
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

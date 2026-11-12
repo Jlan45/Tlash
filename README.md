@@ -42,6 +42,8 @@ curl -fsSL https://raw.githubusercontent.com/Jlan45/Tlash/main/scripts/install.s
 - 指定版本：`... | version=v0.1.0-alpha.1 sh`
 - 卸载（保留数据）：`... | sh -s uninstall`；连数据一起删除：`... | sh -s purge`
 
+两个版本：**标准版**内置 zashboard 面板（约 13 MB）；**精简版**不带面板、经 UPX 压缩（约 2.5 MB），给闪存小的路由器用。OpenWrt 上闪存不足 32 MB 时自动安装精简版，也可用 `variant=full` / `variant=lite` 指定。
+
 root 安装到 `/usr/local/bin/tlash`，数据在 `/etc/tlash`；普通用户安装到 `~/.local/bin/tlash`，数据在 `~/.local/share/tlash`。也可以从 [Releases](https://github.com/Jlan45/Tlash/releases) 手动下载（linux amd64 / arm64 / armv7 / 386）。
 
 ## 使用
@@ -63,7 +65,7 @@ tlash --controller 127.0.0.1:9090 --secret <secret>
 
 ## Web 面板
 
-在 设置 → 资源 → Web 面板 按 `w` 选择 metacubexd 或 zashboard，并在 设置 → 接管 开启 TCP 控制接口（`127.0.0.1:9090` 仅本机，`0.0.0.0:9090` 局域网可访问）。然后运行：
+在 设置 → 资源 → Web 面板 按 `w` 选择 zashboard（标准版内置，选择后直接释放，无需访问 GitHub；`P` 在线更新到最新版）或 metacubexd（在线下载），并在 设置 → 接管 开启 TCP 控制接口（`127.0.0.1:9090` 仅本机，`0.0.0.0:9090` 局域网可访问）。然后运行：
 
 ```sh
 tlash web

@@ -165,6 +165,9 @@ func prestart(ctx context.Context, dir string) error {
 	if err := ws.EnsureCore(ctx); err != nil {
 		return err
 	}
+	if err := ws.EnsureDashboard(); err != nil {
+		return err
+	}
 	return ws.PrepareGateway(ctx)
 }
 
@@ -185,7 +188,7 @@ func newWebCmd(f *rootFlags) *cobra.Command {
 				if !acc.Downloaded {
 					state = "未下载"
 				}
-				fmt.Fprintf(out, "Web 面板  %s（%s）\n", acc.Dashboard, state)
+				fmt.Fprintf(out, "Web 面板  %s（%s，%s）\n", acc.Dashboard, state, acc.Source)
 			}
 			if acc.Controller != "" {
 				switch {
