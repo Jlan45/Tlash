@@ -59,7 +59,7 @@ func newRootCmd() *cobra.Command {
 				buildinfo.Version, buildinfo.Commit, buildinfo.Date, runtime.GOOS, runtime.GOARCH)
 		},
 	})
-	cmd.AddCommand(newTaskCmd(f), newEnvCmd(f), newGatewayCmd(f), &cobra.Command{
+	cmd.AddCommand(newTaskCmd(f), newEnvCmd(f), newGatewayCmd(f), newWebCmd(f), &cobra.Command{
 		Use:    "prestart",
 		Short:  "内核启动前的准备：把内核恢复到内存、恢复网关系统设置（服务启动钩子）",
 		Hidden: true,
@@ -166,6 +166,54 @@ func prestart(ctx context.Context, dir string) error {
 		return err
 	}
 	return ws.PrepareGateway(ctx)
+}
+
+func newWebCmd(f *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:   "web",
+		Short: "打印 Web 面板的访问地址、后端地址和密钥",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			ws, err := workspace.Open(f.dir)
+			if err != nil {
+				return err
+			}
+			acc := ws.WebAccess()
+			out := cmd.OutOrStdout()
+			if acc.Dashboard != "" {
+				state := "已下载"
+				if !acc.Downloaded {
+					state = "未下载"
+				}
+				fmt.Fprintf(out, "Web 面板  %s（%s）\n", acc.Dashboard, state)
+			}
+			if acc.Controller != "" {
+				switch {
+				case acc.Tunnel != "":
+					fmt.Fprintf(out, "\n控制接口只监听本机（%s），先在你自己的电脑上建立 SSH 隧道：\n  %s\n\n然后在浏览器打开：\n  %s\n", acc.Controller, acc.Tunnel, acc.LocalURL)
+					fmt.Fprintf(out, "\n后端地址  http://127.0.0.1:%s\n", acc.LocalURL[len("http://127.0.0.1:"):len(acc.LocalURL)-len("/ui")])
+				case len(acc.URLs) > 0:
+					fmt.Fprintln(out, "\n在浏览器打开：")
+					for _, u := range acc.URLs {
+						fmt.Fprintln(out, "  "+u)
+					}
+					if acc.MoreURLs > 0 {
+						fmt.Fprintf(out, "  …还有 %d 个本机地址\n", acc.MoreURLs)
+					}
+					fmt.Fprintf(out, "\n后端地址  打开的地址去掉末尾的 /ui，例如 %s\n", acc.URLs[0][:len(acc.URLs[0])-len("/ui")])
+				}
+				fmt.Fprintf(out, "密钥      %s\n", acc.Secret)
+			}
+			if len(acc.Problems) > 0 {
+				fmt.Fprintln(out, "\n还需要：")
+				for _, p := range acc.Problems {
+					fmt.Fprintln(out, "  · "+p)
+				}
+				return fmt.Errorf("Web 面板尚不可用")
+			}
+			return nil
+		},
+	}
 }
 
 func newEnvCmd(f *rootFlags) *cobra.Command {
