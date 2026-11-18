@@ -86,6 +86,10 @@ func Generate(profile []byte, overrides []NamedOverride, m appsettings.Managed, 
 		if err := applyGateway(root, *gw, m.ResourceMirror); err != nil {
 			return nil, err
 		}
+	} else if gw != nil {
+		// TUN only comes from Tlash, where enabling it has the confirm-or-rollback guard:
+		// a profile turning it on could cut off the SSH session with nothing to undo it.
+		disableTun(root)
 	}
 
 	// The control API is always Tlash's: a unix socket, plus TCP only when explicitly enabled.

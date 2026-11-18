@@ -45,10 +45,11 @@ func newRootCmd() *cobra.Command {
 			}
 			return nil
 		},
-		RunE: func(cmd *cobra.Command, _ []string) error { return runTUI(cmd.Context(), f) },
+		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error { return ensureRoot(cmd, f) },
+		RunE:              func(cmd *cobra.Command, _ []string) error { return runTUI(cmd.Context(), f) },
 	}
 	fl := cmd.PersistentFlags()
-	fl.StringVar(&f.dir, "dir", envOr("TLASH_DIR", workspace.DefaultDir()), "Tlash 数据目录（环境变量 TLASH_DIR）")
+	fl.StringVar(&f.dir, "dir", envOr("TLASH_DIR", workspace.DefaultDir), "Tlash 数据目录（环境变量 TLASH_DIR）")
 	fl.StringVar(&f.controller, "controller", os.Getenv("TLASH_CONTROLLER"),
 		"连接一个不由 Tlash 管理的 mihomo：unix socket 路径、unix:///path、host:port 或 http://host:port（环境变量 TLASH_CONTROLLER）")
 	fl.StringVar(&f.secret, "secret", os.Getenv("TLASH_SECRET"), "控制接口 secret（环境变量 TLASH_SECRET）")
@@ -78,7 +79,7 @@ func newRootCmd() *cobra.Command {
 		switch c.Name() {
 		case "env", "web":
 			c.GroupID = groupDaily
-		case "gateway", "task":
+		case "tun", "task":
 			c.GroupID = groupMaint
 		}
 	}
@@ -104,7 +105,8 @@ func newTaskCmd(f *rootFlags) *cobra.Command {
 }
 
 func newGatewayCmd(f *rootFlags) *cobra.Command {
-	gw := &cobra.Command{Use: "gateway", Short: "网关（透明代理）"}
+	// "gateway" stays as an alias: older guards and service files call `tlash gateway …`.
+	gw := &cobra.Command{Use: "tun", Aliases: []string{"gateway"}, Short: "TUN 模式与网关（透明代理）"}
 	open := func() (*workspace.Workspace, error) { return workspace.Open(f.dir) }
 	var token string
 	guard := &cobra.Command{
@@ -131,7 +133,7 @@ func newGatewayCmd(f *rootFlags) *cobra.Command {
 		},
 		&cobra.Command{
 			Use:   "check",
-			Short: "检查本机能否作为网关（环境检查）",
+			Short: "环境检查（标 [网关] 的项只影响网关模式）",
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, _ []string) error {
 				ws, err := open()
@@ -141,8 +143,12 @@ func newGatewayCmd(f *rootFlags) *cobra.Command {
 				failed := false
 				for _, c := range ws.GatewayPreflight(cmd.Context()) {
 					mark := map[workspace.CheckLevel]string{workspace.CheckOK: "✓", workspace.CheckWarn: "!", workspace.CheckFail: "✗"}[c.Level]
-					fmt.Fprintf(cmd.OutOrStdout(), "%s %s  %s\n", mark, c.Name, c.Detail)
-					failed = failed || c.Level == workspace.CheckFail
+					name := c.Name
+					if c.GatewayOnly {
+						name = "[网关] " + name
+					}
+					fmt.Fprintf(cmd.OutOrStdout(), "%s %s  %s\n", mark, name, c.Detail)
+					failed = failed || (c.Level == workspace.CheckFail && !c.GatewayOnly)
 				}
 				if failed {
 					return fmt.Errorf("环境检查未通过")
@@ -152,7 +158,7 @@ func newGatewayCmd(f *rootFlags) *cobra.Command {
 		},
 		&cobra.Command{
 			Use:   "off",
-			Short: "关闭网关并还原系统设置（网关导致无法使用界面时救急用）",
+			Short: "关闭 TUN / 网关并还原系统设置（网络异常、无法使用界面时救急用）",
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, _ []string) error {
 				ws, err := open()
@@ -165,7 +171,7 @@ func newGatewayCmd(f *rootFlags) *cobra.Command {
 					err = ws.DisableGateway(cmd.Context())
 				}
 				if err == nil {
-					fmt.Fprintln(cmd.OutOrStdout(), "网关已关闭")
+					fmt.Fprintln(cmd.OutOrStdout(), "TUN 已关闭")
 				}
 				return err
 			},
@@ -279,6 +285,7 @@ func runTUI(ctx context.Context, f *rootFlags) error {
 		}
 		opts.Client = mihomoapi.New(ep, f.secret)
 	} else {
+		offerLegacyMigration(ctx, f.dir)
 		ws, err := workspace.Open(f.dir)
 		if err != nil {
 			return fmt.Errorf("打开数据目录 %s 失败: %w", f.dir, err)

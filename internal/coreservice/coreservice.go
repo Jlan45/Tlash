@@ -12,19 +12,16 @@ import (
 type Kind string
 
 const (
-	KindSystemd     Kind = "systemd"
-	KindSystemdUser Kind = "systemd-user"
-	KindOpenRC      Kind = "openrc"
-	KindProcd       Kind = "procd"
-	KindProcess     Kind = "process"
+	KindSystemd Kind = "systemd"
+	KindOpenRC  Kind = "openrc"
+	KindProcd   Kind = "procd"
+	KindProcess Kind = "process"
 )
 
 func (k Kind) Label() string {
 	switch k {
 	case KindSystemd:
 		return "systemd"
-	case KindSystemdUser:
-		return "systemd（用户级）"
 	case KindOpenRC:
 		return "OpenRC"
 	case KindProcd:
@@ -115,9 +112,6 @@ func Detect(setting string) Kind {
 		if root {
 			return KindSystemd
 		}
-		if os.Getenv("XDG_RUNTIME_DIR") != "" {
-			return KindSystemdUser
-		}
 	case "procd":
 		if root {
 			return KindProcd
@@ -132,8 +126,8 @@ func Detect(setting string) Kind {
 // New builds the manager for kind.
 func New(kind Kind, spec Spec) (Manager, error) {
 	switch kind {
-	case KindSystemd, KindSystemdUser:
-		return newSystemd(spec, kind == KindSystemdUser, execRunner)
+	case KindSystemd:
+		return newSystemd(spec, execRunner)
 	case KindOpenRC:
 		return &initScript{spec: spec, kind: KindOpenRC, run: execRunner, dir: "/etc/init.d"}, nil
 	case KindProcd:

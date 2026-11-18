@@ -41,17 +41,9 @@ type Workspace struct {
 	client   *mihomoapi.Client
 }
 
-// DefaultDir is /etc/tlash for root, else the per-user data dir.
-func DefaultDir() string {
-	if os.Geteuid() == 0 {
-		return "/etc/tlash"
-	}
-	if d := os.Getenv("XDG_DATA_HOME"); d != "" {
-		return filepath.Join(d, "tlash")
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "share", "tlash")
-}
+// DefaultDir is where Tlash keeps its data. Tlash runs as root (TUN and system services
+// need it), so there is one system-wide data dir.
+const DefaultDir = "/etc/tlash"
 
 // Exists reports whether dir already holds a Tlash workspace.
 func Exists(dir string) bool {

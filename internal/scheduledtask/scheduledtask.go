@@ -44,15 +44,8 @@ func quote(s string) string {
 
 // For picks the scheduler matching how the core itself is supervised.
 func For(kind coreservice.Kind, job Job) (Scheduler, error) {
-	switch kind {
-	case coreservice.KindSystemd:
+	if kind == coreservice.KindSystemd {
 		return &systemdTimer{job: job, dir: "/etc/systemd/system"}, nil
-	case coreservice.KindSystemdUser:
-		cfg, err := os.UserConfigDir()
-		if err != nil {
-			return nil, err
-		}
-		return &systemdTimer{job: job, user: true, dir: filepath.Join(cfg, "systemd", "user")}, nil
 	}
 	if _, err := exec.LookPath("crontab"); err != nil {
 		return nil, errors.New("没有 systemd 也没有 crontab，无法注册定时任务")
@@ -61,22 +54,13 @@ func For(kind coreservice.Kind, job Job) (Scheduler, error) {
 }
 
 type systemdTimer struct {
-	job  Job
-	user bool
-	dir  string
+	job Job
+	dir string
 }
 
-func (t *systemdTimer) Label() string {
-	if t.user {
-		return "systemd timer（用户级）"
-	}
-	return "systemd timer"
-}
+func (t *systemdTimer) Label() string { return "systemd timer" }
 
 func (t *systemdTimer) systemctl(ctx context.Context, args ...string) error {
-	if t.user {
-		args = append([]string{"--user"}, args...)
-	}
 	out, err := exec.CommandContext(ctx, "systemctl", args...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("systemctl %s: %s", strings.Join(args, " "), strings.TrimSpace(string(out)))

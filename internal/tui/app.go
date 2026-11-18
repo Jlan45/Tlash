@@ -393,16 +393,19 @@ func (a *App) handleMainKey(msg tea.KeyPressMsg) tea.Cmd {
 	case "esc", "tab":
 		a.inMain = false
 		return nil
-	case "left", "h":
-		return a.switchTab(-1)
-	case "right", "l":
-		return a.switchTab(1)
 	}
 	if p.interactive(tab) {
 		if cmd, ok := p.mainKey(tab, msg); ok {
 			return cmd
 		}
-	} else if a.scrollMain(msg.String()) {
+	}
+	switch msg.String() {
+	case "left", "h":
+		return a.switchTab(-1)
+	case "right", "l":
+		return a.switchTab(1)
+	}
+	if !p.interactive(tab) && a.scrollMain(msg.String()) {
 		return nil
 	}
 	if cmd := runAction(p.mainActions(tab), msg.String()); cmd != nil {
@@ -768,17 +771,14 @@ func (a *App) renderStatusBar() string {
 // x menu and ? help.
 var hintShort = map[string]string{
 	"修改名称 / 链接 / UA / 更新间隔": "修改",
-	"开启 / 关闭网关":             "开关网关",
 	"临时停用 / 启用此规则":          "停用/启用",
 	"作用范围：全部订阅 / 仅当前订阅":     "作用范围",
 	"选中项改用订阅自带值":            "用订阅值",
-	"切换稳定版 / 预览版":           "切换通道",
 	"在线更新 Web 面板到最新版":       "更新面板",
-	"GEO 自动更新间隔":            "GEO 间隔",
 	"立即更新 GEO 数据库":          "更新 GEO",
-	"资源下载走镜像":               "镜像",
 	"全部代理组测速":               "全部测速",
 	"更新全部代理集":               "更新代理集",
+	"修改 / 切换选中项":            "修改/切换",
 }
 
 // hintLabel shortens an action description for the status bar: an explicit short form,
@@ -802,13 +802,13 @@ func (a *App) renderHelp() string {
 	}
 	lines = append(lines, "", styleTitle.Render("全局"), "")
 	for _, g := range []hint{
-		{"↑/↓ tab shift+tab", "切换左侧面板（↑↓ 到头自动跨面板）"},
+		{"↑/↓ tab shift+tab", "切换左侧面板（↑/↓ 到头自动跨面板）"},
 		{"→ l（左侧）", "进入主面板"},
 		{fmt.Sprintf("1-%d", len(a.panels)), "直接聚焦面板"},
 		{"j/k ↑/↓ g/G", "移动 / 首尾"},
 		{"enter / esc", "进入主面板 / 返回左侧"},
 		{"[ ]", "切换主面板标签"},
-		{"←/→ h/l（主面板内）", "切换主面板标签"},
+		{"←/→ h/l（主面板内）", "切换标签（设置项内 ←/→ 切换值）"},
 		{"/", "过滤当前列表"},
 		{"x", "当前可用操作菜单"},
 		{"+ / _", "屏幕模式：普通 / 主面板加宽 / 全屏"},

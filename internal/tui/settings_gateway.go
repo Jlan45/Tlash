@@ -29,31 +29,83 @@ func loadGatewayState(ws *workspace.Workspace) gatewayState {
 
 type gatewayPendingMsg struct{ deadline time.Time }
 
+var tunModes = []string{appsettings.TunOff, appsettings.TunLocal, appsettings.TunGateway}
+
+func tunModeLabel(mode string) string {
+	switch mode {
+	case appsettings.TunLocal:
+		return "仅本机"
+	case appsettings.TunGateway:
+		return "本机 + 局域网（网关）"
+	default:
+		return "关闭"
+	}
+}
+
 func (p *settingsPanel) gateway() appsettings.Gateway {
 	return p.sess.ws.Settings().Gateway.WithDefaults()
 }
 
 func (p *settingsPanel) updateGateway(okText string, fn func(*appsettings.Gateway)) tea.Cmd {
+	if text, busy := coreConfigBusy(p.sess); busy {
+		return notify(text + "，请稍候")
+	}
 	ws, sess := p.sess.ws, p.sess
-	return sess.job("gateway", "应用网关设置", func(ctx context.Context) (string, error) {
+	return sess.job("gateway", "应用 TUN 设置", func(ctx context.Context) (string, error) {
 		return okText, ws.UpdateGateway(ctx, fn)
 	}, p.refresh(), sess.refreshAll())
 }
 
+func (p *settingsPanel) stepTunMode(delta int) tea.Cmd {
+	if text, busy := coreConfigBusy(p.sess); busy {
+		return notify(text + "，请稍候")
+	}
+	ws, sess := p.sess.ws, p.sess
+	g := p.gateway()
+	cur := g.Mode()
+	idx := slices.Index(tunModes, cur)
+	if idx < 0 {
+		idx = 0
+	}
+	n := len(tunModes)
+	next := tunModes[(idx+delta%n+n)%n]
+	if next == cur {
+		return nil
+	}
+	if next == appsettings.TunOff {
+		prompt := "关闭 TUN？\n本机流量将不再经过透明代理。"
+		if g.IsGateway() {
+			prompt = "关闭 TUN？\n本机和局域网设备将不再经过透明代理，系统设置会被还原。"
+		}
+		return askConfirm(prompt, func() tea.Cmd {
+			return sess.job("gateway", "关闭 TUN", func(ctx context.Context) (string, error) {
+				_, err := ws.SetTunMode(ctx, appsettings.TunOff)
+				return "TUN 已关闭", err
+			}, p.refresh(), sess.refreshAll())
+		})
+	}
+	return sess.job("gateway", "切换 TUN 模式", func(ctx context.Context) (string, error) {
+		_, err := ws.SetTunMode(ctx, next)
+		return "", err
+	}, p.refresh(), sess.refreshAll(), func() tea.Msg {
+		if d, ok := ws.PendingGateway(); ok {
+			return gatewayPendingMsg{deadline: d}
+		}
+		return nil
+	})
+}
+
 func (p *settingsPanel) gatewayItems() []settingItem {
 	g := p.gateway()
-	acts := map[string]func() tea.Cmd{}
-	for _, a := range p.gatewayActions() {
-		acts[a.key] = a.run
-	}
+	mode := g.Mode()
 	var state string
 	switch {
 	case !p.state.gateway.pending.IsZero():
-		state = styleWarn.Render("● 等待确认（" + p.state.gateway.pending.Format("15:04:05") + " 前不确认将回滚）")
+		state = styleWarn.Render("● " + tunModeLabel(mode) + "（等待确认，" + p.state.gateway.pending.Format("15:04:05") + " 前不确认将回滚）")
 	case g.Enabled:
-		state = styleOK.Render("● 已开启") + styleDim.Render("  TUN（"+g.Stack+"）")
+		state = styleOK.Render("● ") + tunModeLabel(mode)
 	default:
-		state = styleDim.Render("● 未开启")
+		state = styleDim.Render("关闭")
 	}
 	ipLabel := "仅 IPv4"
 	if g.IPv6 {
@@ -72,12 +124,22 @@ func (p *settingsPanel) gatewayItems() []settingItem {
 		exclude = strings.Join(g.ExcludeAddrs, ", ")
 	}
 	items := []settingItem{
-		{label: "状态", value: state, hint: "t 开启 / 关闭", edit: acts["t"]},
-		{label: "协议栈", value: g.Stack, hint: "mixed 兼顾性能与兼容；enter 切换", edit: p.cycleStack},
-		{label: "IP 协议", value: ipLabel, hint: "enter 切换", edit: func() tea.Cmd {
+		{label: "模式", value: state, hint: "←→ 切换 · 开启后 60 秒内确认", step: p.stepTunMode},
+		{label: "协议栈", value: g.Stack, hint: "mixed 兼顾性能与兼容；←→ 切换", step: p.cycleStack},
+		{label: "IP 协议", value: ipLabel, hint: "←→ 切换", step: func(int) tea.Cmd {
 			return p.updateGateway("IP 协议已切换", func(gw *appsettings.Gateway) { gw.IPv6 = !gw.IPv6 })
 		}},
-		{label: "代理范围", value: scope, hint: "enter 切换黑名单 / 白名单", edit: func() tea.Cmd {
+		{label: "大陆 IP", value: cn, hint: "←→ 切换", step: func(int) tea.Cmd {
+			return p.updateGateway("大陆 IP 处理方式已切换", func(gw *appsettings.Gateway) { gw.BypassCN = !gw.BypassCN })
+		}},
+		{label: "排除地址", value: exclude, hint: "enter 修改 · 这些地址不经过代理", edit: func() tea.Cmd {
+			return showForm(newInputForm("排除地址", func(v []string) tea.Cmd {
+				return p.updateGateway("排除地址已修改", func(gw *appsettings.Gateway) { gw.ExcludeAddrs = splitList(v[0]) })
+			}).addText("地址", strings.Join(g.ExcludeAddrs, ", "), "203.0.113.7, 10.0.0.0/8", "开启 TUN 时会自动加入当前 SSH 客户端地址；多项用逗号分隔"))
+		}},
+	}
+	if g.IsGateway() {
+		items = append(items, settingItem{label: "代理范围", value: scope, hint: "←→ 切换黑白名单", step: func(int) tea.Cmd {
 			return p.updateGateway("代理范围已切换", func(gw *appsettings.Gateway) {
 				if gw.DeviceMode == appsettings.DeviceModeSelected {
 					gw.DeviceMode = appsettings.DeviceModeAll
@@ -85,40 +147,39 @@ func (p *settingsPanel) gatewayItems() []settingItem {
 					gw.DeviceMode = appsettings.DeviceModeSelected
 				}
 			})
-		}},
-	}
-	for i, d := range g.Devices {
-		label := ""
-		if i == 0 {
-			label = "设备"
-		}
-		mac := d.MAC
-		items = append(items, settingItem{label: label, value: deviceLabel(d.Name, d.MAC, p.ipOf(d.MAC)), hint: "enter 移除", edit: func() tea.Cmd {
-			return p.updateGateway("已移除 "+mac, func(gw *appsettings.Gateway) {
-				gw.Devices = slices.DeleteFunc(gw.Devices, func(x appsettings.Device) bool { return x.MAC == mac })
-			})
 		}})
+		for i, d := range g.Devices {
+			label := ""
+			if i == 0 {
+				label = "设备"
+			}
+			mac := d.MAC
+			items = append(items, settingItem{label: label, value: deviceLabel(d.Name, d.MAC, p.ipOf(d.MAC)), hint: "enter 移除", edit: func() tea.Cmd {
+				return p.updateGateway("已移除 "+mac, func(gw *appsettings.Gateway) {
+					gw.Devices = slices.DeleteFunc(gw.Devices, func(x appsettings.Device) bool { return x.MAC == mac })
+				})
+			}})
+		}
+		items = append(items,
+			settingItem{label: "添加设备", value: styleDim.Render(fmt.Sprintf("局域网中发现 %d 台", len(p.state.gateway.devices))), hint: "a 或 enter 从列表选择或手动输入 MAC", edit: p.addDeviceMenu},
+			settingItem{label: "DNS 监听", value: p.dnsListenLabel(), hint: p.dnsListenHint(), edit: func() tea.Cmd {
+				return showForm(newInputForm("DNS 监听地址", func(v []string) tea.Cmd {
+					return p.updateGateway("DNS 监听已修改", func(gw *appsettings.Gateway) { gw.DNSListen = v[0] })
+				}).addText("地址", g.DNSListen, p.sess.ws.GatewayDNSListen(), "留空使用默认值；53 端口被占用时可改为局域网 IP，如 192.168.1.2:53"))
+			}},
+		)
 	}
-	items = append(items,
-		settingItem{label: "添加设备", value: styleDim.Render(fmt.Sprintf("局域网中发现 %d 台", len(p.state.gateway.devices))), hint: "a 从列表选择或手动输入 MAC", edit: acts["a"]},
-		settingItem{label: "大陆 IP", value: cn, hint: "enter 切换", edit: func() tea.Cmd {
-			return p.updateGateway("大陆 IP 处理方式已切换", func(gw *appsettings.Gateway) { gw.BypassCN = !gw.BypassCN })
-		}},
-		settingItem{label: "DNS 监听", value: p.dnsListenLabel(), hint: p.dnsListenHint(), edit: func() tea.Cmd {
-			return showForm(newInputForm("DNS 监听地址", func(v []string) tea.Cmd {
-				return p.updateGateway("DNS 监听已修改", func(gw *appsettings.Gateway) { gw.DNSListen = v[0] })
-			}).addText("地址", g.DNSListen, p.sess.ws.GatewayDNSListen(), "留空使用默认值；53 端口被占用时可改为局域网 IP，如 192.168.1.2:53"))
-		}},
-		settingItem{label: "排除地址", value: exclude, hint: "这些地址不经过代理", edit: func() tea.Cmd {
-			return showForm(newInputForm("排除地址", func(v []string) tea.Cmd {
-				return p.updateGateway("排除地址已修改", func(gw *appsettings.Gateway) { gw.ExcludeAddrs = splitList(v[0]) })
-			}).addText("地址", strings.Join(g.ExcludeAddrs, ", "), "203.0.113.7, 10.0.0.0/8", "开启网关时会自动加入当前 SSH 客户端地址；多项用逗号分隔"))
-		}},
-	)
-	if len(p.state.gateway.checks) > 0 {
+	var checks []workspace.GatewayCheck
+	for _, c := range p.state.gateway.checks {
+		if c.GatewayOnly && !g.IsGateway() {
+			continue
+		}
+		checks = append(checks, c)
+	}
+	if len(checks) > 0 {
 		items = append(items, settingItem{label: "环境检查"})
 	}
-	for _, c := range p.state.gateway.checks {
+	for _, c := range checks {
 		mark := styleOK.Render("✓")
 		switch c.Level {
 		case workspace.CheckWarn:
@@ -152,33 +213,22 @@ func deviceLabel(name, mac, ip string) string {
 	return strings.Join(parts, "  ")
 }
 
-func (p *settingsPanel) cycleStack() tea.Cmd {
+func (p *settingsPanel) cycleStack(delta int) tea.Cmd {
 	stacks := []string{"mixed", "system", "gvisor"}
-	next := stacks[(slices.Index(stacks, p.gateway().Stack)+1)%len(stacks)]
+	idx := slices.Index(stacks, p.gateway().Stack)
+	if idx < 0 {
+		idx = 0
+	}
+	n := len(stacks)
+	next := stacks[(idx+delta%n+n)%n]
 	return p.updateGateway("协议栈："+next, func(gw *appsettings.Gateway) { gw.Stack = next })
 }
 
 func (p *settingsPanel) gatewayActions() []action {
-	ws, sess := p.sess.ws, p.sess
+	if !p.gateway().IsGateway() {
+		return nil
+	}
 	return []action{
-		{"t", "开启 / 关闭网关", func() tea.Cmd {
-			if p.gateway().Enabled {
-				return askConfirm("关闭网关？\n局域网设备将不再经过代理，系统设置会被还原。", func() tea.Cmd {
-					return sess.job("gateway", "关闭网关", func(ctx context.Context) (string, error) {
-						return "网关已关闭", ws.DisableGateway(ctx)
-					}, p.refresh(), sess.refreshAll())
-				})
-			}
-			return sess.job("gateway", "开启网关", func(ctx context.Context) (string, error) {
-				_, err := ws.EnableGateway(ctx)
-				return "", err
-			}, p.refresh(), sess.refreshAll(), func() tea.Msg {
-				if d, ok := ws.PendingGateway(); ok {
-					return gatewayPendingMsg{deadline: d}
-				}
-				return nil
-			})
-		}},
 		{"a", "添加设备", p.addDeviceMenu},
 	}
 }
@@ -213,22 +263,23 @@ func (p *settingsPanel) addDeviceMenu() tea.Cmd {
 	return showMenu(title, items)
 }
 
-// confirmGateway asks to keep a just-enabled gateway; declining rolls back immediately.
+// confirmGateway asks to keep a just-enabled TUN mode; declining rolls back immediately.
 func (p *settingsPanel) confirmGateway(deadline time.Time) tea.Cmd {
 	ws, sess := p.sess.ws, p.sess
 	p.promptedFor = deadline
-	prompt := fmt.Sprintf("网关已开启。确认网络正常后按 y 保留；\n按 n 立即回滚。%s 前不确认会自动回滚，\nSSH 断开也会照常回滚。", deadline.Format("15:04:05"))
+	modeName := tunModeLabel(p.gateway().Mode())
+	prompt := fmt.Sprintf("TUN（%s）已开启。确认网络正常后按 y 保留；\n按 n 立即回滚。%s 前不确认会自动回滚，\nSSH 断开也会照常回滚。", modeName, deadline.Format("15:04:05"))
 	return askChoice(prompt,
 		func() tea.Cmd {
 			return func() tea.Msg {
 				if err := ws.ConfirmGateway(); err != nil {
 					return notifyMsg{text: err.Error(), isErr: true}
 				}
-				return tea.BatchMsg{notify("网关已保留"), p.refresh()}
+				return tea.BatchMsg{notify("TUN 模式已保留"), p.refresh()}
 			}
 		},
 		func() tea.Cmd {
-			return sess.job("gateway", "回滚网关", func(ctx context.Context) (string, error) {
+			return sess.job("gateway", "回滚 TUN", func(ctx context.Context) (string, error) {
 				return "已回滚", ws.RollbackGateway(ctx)
 			}, p.refresh(), sess.refreshAll())
 		})
@@ -244,7 +295,7 @@ func (p *settingsPanel) dnsListenLabel() string {
 
 func (p *settingsPanel) dnsListenHint() string {
 	if p.sess.ws.IsOpenWrt() {
-		return "OpenWrt 上由 dnsmasq 转发到这里"
+		return "OpenWrt 上由 dnsmasq 转发到这里 · enter 修改"
 	}
-	return "局域网设备把 DNS 指向本机时使用"
+	return "局域网设备把 DNS 指向本机时使用 · enter 修改"
 }

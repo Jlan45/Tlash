@@ -183,7 +183,7 @@ func (p *statusPanel) overview(w, h int) string {
 	if s.ws != nil {
 		row("订阅", activeProfileLabel(s))
 		row("托管", fmt.Sprintf("%s · 开机自启 %s", s.core.kind.Label(), onOff(s.core.autoStart)))
-		row("网关", gatewaySummary(s.ws.Settings().Gateway))
+		row("TUN", gatewaySummary(s.ws.Settings().Gateway))
 	} else {
 		row("控制接口", s.client.Endpoint().String())
 	}
@@ -332,16 +332,21 @@ func onOff(b bool) string {
 
 func gatewaySummary(g appsettings.Gateway) string {
 	if !g.Enabled {
-		return styleDim.Render("未开启（7 设置 → 网关）")
+		return styleDim.Render("关闭（7 设置 → TUN）")
 	}
 	g = g.WithDefaults()
-	parts := []string{styleOK.Render("已开启")}
-	if g.DeviceMode == appsettings.DeviceModeSelected {
-		parts = append(parts, fmt.Sprintf("只代理 %d 台设备", len(g.Devices)))
-	} else if len(g.Devices) > 0 {
-		parts = append(parts, fmt.Sprintf("排除 %d 台设备", len(g.Devices)))
+	var parts []string
+	if g.LocalOnly {
+		parts = append(parts, styleOK.Render("仅本机"))
 	} else {
-		parts = append(parts, "全部设备")
+		parts = append(parts, styleOK.Render("本机 + 局域网（网关）"))
+		if g.DeviceMode == appsettings.DeviceModeSelected {
+			parts = append(parts, fmt.Sprintf("只代理 %d 台设备", len(g.Devices)))
+		} else if len(g.Devices) > 0 {
+			parts = append(parts, fmt.Sprintf("排除 %d 台设备", len(g.Devices)))
+		} else {
+			parts = append(parts, "全部设备")
+		}
 	}
 	if g.BypassCN {
 		parts = append(parts, "大陆 IP 直接放行")

@@ -212,16 +212,17 @@ func TestGatewayConfirmFlow(t *testing.T) {
 	app.Update(teaWindowSize(130, 40))
 	run(app, app.sess.refreshAll())
 
-	// 设置 → 网关 (third category).
+	// 设置 → TUN (third category).
 	press(app, panelKey(t, app, "设置"), "down", "down")
 	run(app, app.cur().activate())
 	out := screen(app)
-	if !strings.Contains(out, "环境检查") || !strings.Contains(out, "未开启") {
-		t.Fatalf("gateway category:\n%s", out)
+	if !strings.Contains(out, "环境检查") || !strings.Contains(out, "关闭") {
+		t.Fatalf("TUN category:\n%s", out)
 	}
-	t.Logf("gateway category:\n%s", out)
+	t.Logf("TUN category:\n%s", out)
 
-	press(app, "t")
+	// Enter the main panel; ← wraps from 关闭 to 本机 + 局域网（网关）, and n rolls back.
+	press(app, "enter", "left")
 	if app.confirm == nil || !strings.Contains(screen(app), "按 n 立即回滚") {
 		t.Fatalf("no keep-or-rollback prompt:\n%s", screen(app))
 	}
@@ -233,19 +234,29 @@ func TestGatewayConfirmFlow(t *testing.T) {
 		t.Fatalf("ip_forward after rollback = %q", b)
 	}
 
-	press(app, "t", "y")
-	if !ws.Settings().Gateway.Enabled {
+	// → switches to 仅本机, y keeps it without enabling ip_forward.
+	press(app, "right", "y")
+	if ws.Settings().Gateway.Mode() != appsettings.TunLocal {
+		t.Fatalf("y did not keep local mode: %s", ws.Settings().Gateway.Mode())
+	}
+	if b, _ := os.ReadFile(filepath.Join(procSys, "net/ipv4/ip_forward")); string(b) != "0\n" {
+		t.Fatalf("local mode changed ip_forward = %q", b)
+	}
+
+	// → advances to 本机 + 局域网（网关）, y keeps it.
+	press(app, "right", "y")
+	if !ws.Settings().Gateway.IsGateway() {
 		t.Fatal("y did not keep the gateway")
 	}
 	if _, pending := ws.PendingGateway(); pending {
 		t.Fatal("still pending after y")
 	}
 	press(app, "1")
-	if out = screen(app); !strings.Contains(out, "网关") || !strings.Contains(out, "已开启") {
-		t.Fatalf("overview lacks gateway state:\n%s", out)
+	if out = screen(app); !strings.Contains(out, "TUN") || !strings.Contains(out, "本机 + 局域网") {
+		t.Fatalf("overview lacks TUN state:\n%s", out)
 	}
 
-	// Add a device by hand via the a menu, then turn the gateway off.
+	// Add a device by hand via the a menu, then turn TUN off via → and confirm.
 	press(app, panelKey(t, app, "设置"), "a", "m")
 	typeText(app, "AA:BB:CC:DD:EE:01")
 	press(app, "tab")
@@ -257,9 +268,9 @@ func TestGatewayConfirmFlow(t *testing.T) {
 	if cfg, _ := os.ReadFile(ws.ConfigPath); !strings.Contains(string(cfg), "aa:bb:cc:dd:ee:01") {
 		t.Fatal("device not in running config")
 	}
-	press(app, "t", "y")
+	press(app, "enter", "right", "y")
 	if ws.Settings().Gateway.Enabled {
-		t.Fatal("gateway still on after disabling")
+		t.Fatal("TUN still on after disabling")
 	}
 	_ = ws.Stop(ctx)
 }

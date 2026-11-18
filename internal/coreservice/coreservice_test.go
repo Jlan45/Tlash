@@ -18,19 +18,19 @@ func TestSystemdUnitAndCommands(t *testing.T) {
 	var calls []string
 	run := func(_ context.Context, name string, args ...string) ([]byte, error) {
 		calls = append(calls, name+" "+strings.Join(args, " "))
-		if len(args) > 1 && args[1] == "is-active" {
+		if len(args) > 0 && args[0] == "is-active" {
 			return []byte("active\n"), nil
 		}
 		return nil, nil
 	}
 	spec := Spec{Name: "tlash-mihomo", CorePath: "/opt/my dir/mihomo", HomeDir: "/etc/tlash/runtime", ConfigPath: "/etc/tlash/runtime/config.yaml"}
-	s, err := newSystemd(spec, true, run)
+	s, err := newSystemd(spec, run)
 	if err != nil {
 		t.Fatal(err)
 	}
 	unit := s.unit()
 	if !strings.Contains(unit, "ExecStart='/opt/my dir/mihomo' -d /etc/tlash/runtime -f /etc/tlash/runtime/config.yaml") ||
-		!strings.Contains(unit, "WantedBy=default.target") {
+		!strings.Contains(unit, "WantedBy=multi-user.target") {
 		t.Errorf("unit:\n%s", unit)
 	}
 	s.unitPath = t.TempDir() + "/u.service"
@@ -42,7 +42,7 @@ func TestSystemdUnitAndCommands(t *testing.T) {
 	if ok, _ := s.Running(ctx); !ok {
 		t.Error("Running should parse is-active output")
 	}
-	want := []string{"systemctl --user daemon-reload", "systemctl --user is-active tlash-mihomo"}
+	want := []string{"systemctl daemon-reload", "systemctl is-active tlash-mihomo"}
 	if strings.Join(calls, "|") != strings.Join(want, "|") {
 		t.Errorf("calls = %q", calls)
 	}

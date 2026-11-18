@@ -554,3 +554,231 @@ func TestAutoDelayTestOncePerGroup(t *testing.T) {
 		t.Fatal("tested although auto test is off")
 	}
 }
+
+func TestSettingsArrowsAndRemovedKeys(t *testing.T) {
+	dir, _ := os.MkdirTemp("", "tls")
+	defer os.RemoveAll(dir)
+	ws, err := workspace.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := New(Options{Client: ws.Client(), Workspace: ws, DelayTest: mihomoapi.DelayTest{URL: "http://x", Timeout: time.Second}})
+	defer app.Close()
+	app.Update(teaWindowSize(130, 40))
+
+	sp := app.panels[len(app.panels)-1].(*settingsPanel)
+	hasAction := func(cat, key string) bool {
+		prev := sp.ls.cursor
+		defer func() { sp.ls.cursor = prev }()
+		for i, c := range sp.categories {
+			if c.name == cat {
+				sp.ls.cursor = i
+				for _, a := range sp.actions() {
+					if a.key == key {
+						return true
+					}
+				}
+				return false
+			}
+		}
+		t.Fatalf("missing category %q", cat)
+		return false
+	}
+
+	for _, removed := range [][2]string{
+		{"内核", "c"}, {"内核", "M"}, {"内核", "A"},
+		{"TUN", "t"}, {"TUN", "a"},
+		{"DNS", "T"}, {"嗅探", "T"},
+		{"资源", "m"}, {"资源", "w"},
+		{"定时任务", "t"}, {"定时任务", "v"},
+	} {
+		if hasAction(removed[0], removed[1]) {
+			t.Errorf("%s still binds removed key %q", removed[0], removed[1])
+		}
+	}
+
+	// 内核: ←/→ switches 更新通道 and 存放位置; ←/→ on 下载镜像 does nothing while enter opens form.
+	press(app, panelKey(t, app, "设置"), "enter", "down", "down") // cursor on 更新通道
+	press(app, "right")
+	if got := ws.Settings().Core.Channel; got != appsettings.ChannelAlpha {
+		t.Fatalf("channel after → = %s, want alpha", got)
+	}
+	press(app, "left")
+	if got := ws.Settings().Core.Channel; got != appsettings.ChannelStable {
+		t.Fatalf("channel after ← = %s, want stable", got)
+	}
+	press(app, "down", "right", "left") // 下载镜像: ←/→ must not open form
+	if app.form != nil {
+		t.Fatal("←/→ opened form on text setting")
+	}
+	press(app, "enter")
+	if app.form == nil {
+		t.Fatal("enter did not open mirror form")
+	}
+	press(app, "esc", "down", "right") // 存放位置
+	if got := ws.Settings().Core.Location; got != appsettings.CoreCompressed {
+		t.Fatalf("core location after → = %q", got)
+	}
+	press(app, "left")
+	if got := ws.Settings().Core.Location; got != appsettings.CoreInData {
+		t.Fatalf("core location after ← = %q", got)
+	}
+
+	// 接管: ←/→ steps enum in both directions and toggles bool.
+	press(app, "esc", "down", "enter")
+	press(app, "down", "right") // 允许局域网: default false -> true
+	if v := ws.Settings().Managed.AllowLan; v == nil || !*v {
+		t.Fatalf("AllowLan after → = %v", v)
+	}
+	press(app, "down", "down", "down", "left") // 日志级别: info -> debug
+	if v := ws.Settings().Managed.LogLevel; v == nil || *v != "debug" {
+		t.Fatalf("LogLevel after ← = %v", v)
+	}
+	press(app, "right", "right") // debug -> info -> warning
+	if v := ws.Settings().Managed.LogLevel; v == nil || *v != "warning" {
+		t.Fatalf("LogLevel after →→ = %v", v)
+	}
+
+	// DNS: ←/→ on 状态 turns takeover on, second ←/→ asks confirm before handing back.
+	press(app, "esc", "down", "down", "enter", "right") // TUN -> DNS, enter, →
+	if ws.Settings().Managed.DNS == nil {
+		t.Fatal("DNS takeover not enabled by →")
+	}
+	press(app, "right")
+	if app.confirm == nil {
+		t.Fatal("handing back DNS did not ask confirmation")
+	}
+	press(app, "n")
+	if ws.Settings().Managed.DNS == nil {
+		t.Fatal("n should keep DNS takeover")
+	}
+	press(app, "left", "y")
+	if ws.Settings().Managed.DNS != nil {
+		t.Fatal("y did not hand back DNS")
+	}
+
+	// 资源: ←/→ toggles 资源下载 and cycles Web 面板.
+	_ = ws.UpdateSettings(func(s *appsettings.Settings) { s.Mirror = "https://ghfast.top/" })
+	press(app, "esc", "down", "down", "enter", "down", "right") // 资源 -> 资源下载
+	if got := ws.Settings().Managed.ResourceMirror; got != "https://ghfast.top/" {
+		t.Fatalf("ResourceMirror after → = %q", got)
+	}
+	press(app, "down", "right") // Web 面板: "" -> zashboard
+	if got := ws.Settings().Managed.Dashboard; got != "zashboard" {
+		t.Fatalf("Dashboard after → = %q", got)
+	}
+	press(app, "left") // zashboard -> ""
+	if got := ws.Settings().Managed.Dashboard; got != "" {
+		t.Fatalf("Dashboard after ← = %q", got)
+	}
+
+	// 工具: ←/→ toggles 自动测速.
+	press(app, "esc", "G", "enter", "right")
+	if !ws.Settings().AutoDelayTestOff {
+		t.Fatal("AutoDelayTestOff not toggled by →")
+	}
+}
+
+func TestTunSettingsFilterAndStatusOverview(t *testing.T) {
+	dir, _ := os.MkdirTemp("", "tltun")
+	defer os.RemoveAll(dir)
+	ws, err := workspace.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := New(Options{Client: ws.Client(), Workspace: ws, DelayTest: mihomoapi.DelayTest{URL: "http://x", Timeout: time.Second}})
+	defer app.Close()
+	app.Update(teaWindowSize(130, 40))
+
+	sp := app.panels[len(app.panels)-1].(*settingsPanel)
+	sp.state.gateway.checks = []workspace.GatewayCheck{
+		{Name: "root 权限", Level: workspace.CheckOK},
+		{Name: "DNS 监听 0.0.0.0:53", Level: workspace.CheckFail, GatewayOnly: true},
+	}
+
+	// Focus 设置 → TUN.
+	press(app, panelKey(t, app, "设置"), "down", "down")
+	hasLabel := func(label string) bool {
+		for _, it := range sp.gatewayItems() {
+			if it.label == label {
+				return true
+			}
+		}
+		return false
+	}
+	hasCheck := func(name string) bool {
+		for _, it := range sp.gatewayItems() {
+			if strings.Contains(it.value, name) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// 关闭 and 仅本机 hide gateway-only rows, checks, and the 'a' action.
+	for _, g := range []appsettings.Gateway{
+		{Enabled: false},
+		{Enabled: true, LocalOnly: true},
+	} {
+		_ = ws.UpdateSettings(func(s *appsettings.Settings) { s.Gateway = g })
+		if hasLabel("代理范围") || hasLabel("DNS 监听") {
+			t.Fatalf("mode %s showed gateway-only rows", g.Mode())
+		}
+		if !hasCheck("root 权限") || hasCheck("DNS 监听 0.0.0.0:53") {
+			t.Fatalf("mode %s wrong preflight check filter", g.Mode())
+		}
+		if len(sp.actions()) != 0 {
+			t.Fatalf("mode %s should have no side actions, got %+v", g.Mode(), sp.actions())
+		}
+	}
+
+	// Gateway mode shows them all.
+	_ = ws.UpdateSettings(func(s *appsettings.Settings) { s.Gateway = appsettings.Gateway{Enabled: true} })
+	if !hasLabel("代理范围") || !hasLabel("DNS 监听") || !hasCheck("DNS 监听 0.0.0.0:53") {
+		t.Fatal("gateway mode missing gateway rows or checks")
+	}
+	if len(sp.actions()) != 1 || sp.actions()[0].key != "a" {
+		t.Fatalf("gateway actions = %+v", sp.actions())
+	}
+
+	// Status panel overview shows current TUN mode.
+	app.sess.connected = true
+	press(app, "1")
+	if out := screen(app); !strings.Contains(out, "TUN") || !strings.Contains(out, "本机 + 局域网（网关）") {
+		t.Fatalf("overview missing gateway TUN mode:\n%s", out)
+	}
+	_ = ws.UpdateSettings(func(s *appsettings.Settings) { s.Gateway = appsettings.Gateway{Enabled: true, LocalOnly: true} })
+	if out := screen(app); !strings.Contains(out, "仅本机") {
+		t.Fatalf("overview missing local TUN mode:\n%s", out)
+	}
+	_ = ws.UpdateSettings(func(s *appsettings.Settings) { s.Gateway = appsettings.Gateway{} })
+	if out := screen(app); !strings.Contains(out, "关闭（7 设置 → TUN）") {
+		t.Fatalf("overview missing off TUN mode:\n%s", out)
+	}
+}
+
+func TestSettingsBusyGuardPreventsConcurrentReload(t *testing.T) {
+	dir, _ := os.MkdirTemp("", "tlbusy")
+	defer os.RemoveAll(dir)
+	ws, err := workspace.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := New(Options{Client: ws.Client(), Workspace: ws, DelayTest: mihomoapi.DelayTest{URL: "http://x", Timeout: time.Second}})
+	defer app.Close()
+	app.Update(teaWindowSize(120, 30))
+
+	app.sess.busy["core-config"] = "应用设置"
+	press(app, panelKey(t, app, "设置"), "down", "enter", "down") // 接管 → 允许局域网
+	_, cmd := app.Update(key("right"))
+	if v := ws.Settings().Managed.AllowLan; v == nil || *v {
+		t.Fatalf("AllowLan mutated while core-config busy: %v", v)
+	}
+	if cmd == nil {
+		t.Fatal("expected busy notification command")
+	}
+	nm, ok := cmd().(notifyMsg)
+	if !ok || !strings.Contains(nm.text, "请稍候") {
+		t.Fatalf("expected busy toast, got %#v", nm)
+	}
+}

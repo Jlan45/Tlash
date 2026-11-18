@@ -35,3 +35,17 @@ func TestLoadSaveRoundTrip(t *testing.T) {
 		t.Error("nil managed field came back non-nil")
 	}
 }
+
+func TestLegacySystemdUserNormalized(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, FileName), []byte("core:\n  service: systemd-user\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, exists, err := Load(dir)
+	if err != nil || !exists {
+		t.Fatalf("Load err=%v exists=%v", err, exists)
+	}
+	if got.Core.Service != "auto" {
+		t.Fatalf("Core.Service = %q, want auto", got.Core.Service)
+	}
+}

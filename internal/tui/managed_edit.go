@@ -122,21 +122,46 @@ func splitList(s string) []string {
 	return f
 }
 
-// editManaged toggles bools and cycles enums in place; other rows open a one-field form.
-func editManaged(sess *session, row managedRow) tea.Cmd {
+// stepManaged cycles bools and enums in direction delta (+1/-1).
+func stepManaged(sess *session, row managedRow, delta int) tea.Cmd {
 	cur, set := row.get(sess.ws.Settings().Managed)
 	switch {
 	case row.isBool:
 		next := "是"
-		if set && cur == "是" {
+		if set {
+			if cur == "是" {
+				next = "否"
+			}
+		} else if delta < 0 {
 			next = "否"
 		}
 		return applyManaged(sess, row.label+" → "+next, func(m *appsettings.Managed) { _ = row.set(m, next) })
 	case row.options != nil:
-		idx := slices.Index(row.options, cur)
-		next := row.options[(idx+1)%len(row.options)]
+		n := len(row.options)
+		idx := 0
+		if !set {
+			if delta < 0 {
+				idx = n - 1
+			}
+		} else {
+			curIdx := slices.Index(row.options, cur)
+			if curIdx < 0 {
+				curIdx = 0
+			}
+			idx = (curIdx + delta%n + n) % n
+		}
+		next := row.options[idx]
 		return applyManaged(sess, row.label+" → "+next, func(m *appsettings.Managed) { _ = row.set(m, next) })
 	}
+	return editManaged(sess, row)
+}
+
+// editManaged toggles bools and cycles enums in place; other rows open a one-field form.
+func editManaged(sess *session, row managedRow) tea.Cmd {
+	if row.isBool || row.options != nil {
+		return stepManaged(sess, row, 1)
+	}
+	cur, _ := row.get(sess.ws.Settings().Managed)
 	if cur == "关闭" {
 		cur = ""
 	}
@@ -153,8 +178,20 @@ func editManaged(sess *session, row managedRow) tea.Cmd {
 	}).addText(row.label, cur, "", hint))
 }
 
+func coreConfigBusy(s *session) (string, bool) {
+	for _, k := range []string{"core-config", "gateway", "ui-update"} {
+		if text, ok := s.busy[k]; ok {
+			return text, true
+		}
+	}
+	return "", false
+}
+
 // applyManaged saves a managed-setting change and hot-reloads it into the running core.
 func applyManaged(sess *session, okText string, fn func(*appsettings.Managed)) tea.Cmd {
+	if text, busy := coreConfigBusy(sess); busy {
+		return notify(text + "，请稍候")
+	}
 	ws := sess.ws
 	return sess.job("core-config", "应用设置", func(ctx context.Context) (string, error) {
 		return okText, ws.UpdateManaged(ctx, fn)

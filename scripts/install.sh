@@ -7,6 +7,8 @@
 #   curl -fsSL <url> | sh -s uninstall                    # remove Tlash, keep data
 #   curl -fsSL <url> | sh -s purge                        # remove Tlash and its data
 #
+# Needs root (TUN and system services do); run as a regular user it re-runs itself via sudo.
+#
 # Env: mirror, version, variant (auto|full|lite), bindir (install location of the tlash
 # binary), base_url (testing).
 set -eu
@@ -22,18 +24,6 @@ die() { printf '\033[31m错误:\033[0m %s\n' "$*" >&2; exit 1; }
 
 is_root() { [ "$(id -u)" -eq 0 ]; }
 is_openwrt() { [ -f /etc/openwrt_release ]; }
-
-if is_root && is_openwrt; then
-	default_bindir=/usr/bin # /usr/local/bin isn't on OpenWrt's PATH
-	datadir=/etc/tlash
-elif is_root; then
-	default_bindir=/usr/local/bin
-	datadir=/etc/tlash
-else
-	default_bindir="$HOME/.local/bin"
-	datadir="${XDG_DATA_HOME:-$HOME/.local/share}/tlash"
-fi
-bindir="${bindir:-$default_bindir}"
 
 mirrored() {
 	if [ -n "$mirror" ]; then
@@ -53,6 +43,31 @@ fetch() {
 		die "需要 curl 或 wget"
 	fi
 }
+
+# become_root re-runs this script under sudo. Piped into sh ($0 is the shell, the script
+# isn't on disk) it downloads itself again first.
+become_root() {
+	is_root && return
+	command -v sudo >/dev/null 2>&1 || die "Tlash 需要 root 权限：请切换到 root 后重新运行安装命令"
+	script="$0"
+	if [ ! -f "$script" ] || ! grep -q 'become_root' "$script" 2>/dev/null; then
+		script=$(mktemp)
+		fetch "$(mirrored "https://raw.githubusercontent.com/$REPO/main/scripts/install.sh")" "$script" ||
+			die "无法重新下载安装脚本，请改用：curl -fsSL <安装脚本地址> | sudo sh"
+	fi
+	info "Tlash 需要 root 权限，正在通过 sudo 运行"
+	exec sudo env mirror="$mirror" version="$version" variant="$variant" \
+		bindir="${bindir:-}" base_url="${base_url:-}" sh "$script" "$@"
+}
+become_root "$@"
+
+if is_openwrt; then
+	default_bindir=/usr/bin # /usr/local/bin isn't on OpenWrt's PATH
+else
+	default_bindir=/usr/local/bin
+fi
+datadir=/etc/tlash
+bindir="${bindir:-$default_bindir}"
 
 # little_endian reads EI_DATA from an ELF header (1 = little endian); uname -m says "mips"
 # for both endiannesses, and most routers (MT7621 etc.) are little endian.
@@ -179,11 +194,11 @@ install_tlash() {
 	echo
 	info "数据目录：$datadir（已有配置会保留）"
 	if [ -n "$mirror" ]; then
-		info "首次运行后在「内核」页按 M 填入镜像 $mirror，再按 D 下载内核"
+		info "首次运行后在「内核」页的「下载镜像」按回车填入 $mirror，再按 D 下载内核"
 	fi
-	echo "  运行 $cmd 打开管理界面，按“状态”面板的引导：下载内核 → 添加订阅 → 启动"
-	if ! is_root; then
-		echo "  非 root 安装：内核以用户级 systemd 服务或后台进程运行，不支持 TUN"
+	echo "  运行 $cmd 打开管理界面（普通用户运行时会自动通过 sudo 提权），按“状态”面板的引导：下载内核 → 添加订阅 → 启动"
+	if [ -n "${SUDO_USER:-}" ] && [ -d "$(eval echo "~$SUDO_USER")/.local/share/tlash" ]; then
+		echo "  检测到以前的普通用户安装：首次运行 tlash 时会提示迁移到 $datadir"
 	fi
 }
 
@@ -205,11 +220,7 @@ openwrt_hints() {
 
 systemctl_maybe() {
 	command -v systemctl >/dev/null 2>&1 || return 0
-	if is_root; then
-		systemctl "$@" >/dev/null 2>&1 || true
-	else
-		systemctl --user "$@" >/dev/null 2>&1 || true
-	fi
+	systemctl "$@" >/dev/null 2>&1 || true
 }
 
 uninstall_tlash() {
@@ -220,14 +231,10 @@ uninstall_tlash() {
 	fi
 	info "停止并移除服务"
 	systemctl_maybe disable --now tlash-mihomo.service tlash-tasks.timer
-	if is_root; then
-		unitdir=/etc/systemd/system
-	else
-		unitdir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
-	fi
+	unitdir=/etc/systemd/system
 	rm -f "$unitdir/tlash-mihomo.service" "$unitdir/tlash-tasks.service" "$unitdir/tlash-tasks.timer"
 	systemctl_maybe daemon-reload
-	if is_root && [ -f /etc/init.d/tlash-mihomo ]; then
+	if [ -f /etc/init.d/tlash-mihomo ]; then
 		/etc/init.d/tlash-mihomo stop >/dev/null 2>&1 || true
 		/etc/init.d/tlash-mihomo disable >/dev/null 2>&1 || true
 		command -v rc-update >/dev/null 2>&1 && rc-update del tlash-mihomo default >/dev/null 2>&1 || true
@@ -241,7 +248,7 @@ uninstall_tlash() {
 	if command -v crontab >/dev/null 2>&1 && crontab -l 2>/dev/null | grep -q '# tlash-tasks:'; then
 		crontab -l 2>/dev/null | grep -v '# tlash-tasks:' | crontab - || true
 	fi
-	is_root && rm -f /etc/profile.d/tlash-proxy.sh
+	rm -f /etc/profile.d/tlash-proxy.sh
 	# The RAM copy of the core lives in /tmp/tlash-<first 8 hex of sha256(datadir)>, as in Tlash.
 	if command -v sha256sum >/dev/null 2>&1; then
 		ramdir="/tmp/tlash-$(printf %s "$datadir" | sha256sum | cut -c1-8)"

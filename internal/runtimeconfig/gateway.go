@@ -16,8 +16,9 @@ const cnRuleSet = "tlash-cn-ip"
 
 const cnRuleSetURL = "https://github.com/MetaCubeX/meta-rules-dat/raw/meta/geo/geoip/cn.mrs"
 
-// applyGateway turns on mihomo's TUN with auto-route/auto-redirect, which is what makes this
-// machine a transparent gateway; DNS from LAN clients is served on g.DNSListen.
+// applyGateway turns on mihomo's TUN with auto-route/auto-redirect. That proxies this machine;
+// in gateway mode (forwarding enabled by gatewaysys) it also proxies the LAN, whose DNS is
+// served on g.DNSListen.
 func applyGateway(root *yaml.Node, g appsettings.Gateway, mirror string) error {
 	g = g.WithDefaults()
 	tun := map[string]any{
@@ -32,7 +33,7 @@ func applyGateway(root *yaml.Node, g appsettings.Gateway, mirror string) error {
 	if len(g.ExcludeAddrs) > 0 {
 		tun["route-exclude-address"] = cidrs(g.ExcludeAddrs)
 	}
-	if macs := deviceMACs(g.Devices); len(macs) > 0 {
+	if macs := deviceMACs(g.Devices); len(macs) > 0 && !g.LocalOnly {
 		if g.DeviceMode == appsettings.DeviceModeSelected {
 			tun["include-mac-address"] = macs
 		} else {
@@ -67,11 +68,13 @@ func applyGateway(root *yaml.Node, g appsettings.Gateway, mirror string) error {
 		setKey(root, "dns", dns)
 	}
 	setKey(dns, "enable", boolNode(true))
-	listen := g.DNSListen
-	if listen == "" {
-		listen = "0.0.0.0:53"
+	if !g.LocalOnly {
+		listen := g.DNSListen
+		if listen == "" {
+			listen = "0.0.0.0:53"
+		}
+		setKey(dns, "listen", strNode(listen))
 	}
-	setKey(dns, "listen", strNode(listen))
 	if lookup(dns, "enhanced-mode") == nil {
 		setKey(dns, "enhanced-mode", strNode("fake-ip"))
 	}
@@ -80,6 +83,13 @@ func applyGateway(root *yaml.Node, g appsettings.Gateway, mirror string) error {
 	}
 	setKey(dns, "ipv6", boolNode(g.IPv6))
 	return nil
+}
+
+// disableTun sets tun.enable to false, keeping the profile's other tun options.
+func disableTun(root *yaml.Node) {
+	if tun := lookup(root, "tun"); tun != nil && tun.Kind == yaml.MappingNode {
+		setKey(tun, "enable", boolNode(false))
+	}
 }
 
 func addRuleProvider(root *yaml.Node, name string, spec map[string]any) error {

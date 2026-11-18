@@ -34,9 +34,12 @@ type Settings struct {
 	AutoDelayTestOff bool `yaml:"auto_delay_test_off,omitempty"`
 }
 
-// Gateway is transparent proxying for this machine and the LAN, built on mihomo's TUN.
+// Gateway is mihomo's TUN as managed by Tlash: for this machine only, or also as a
+// transparent gateway for the LAN. When off, Tlash keeps TUN off even if a profile enables it.
 type Gateway struct {
-	Enabled bool `yaml:"enabled"`
+	// Enabled turns the TUN on; LocalOnly limits it to this machine (no forwarding, no LAN DNS).
+	Enabled   bool `yaml:"enabled"`
+	LocalOnly bool `yaml:"local_only,omitempty"`
 	// Stack is the TUN network stack: mixed, system or gvisor.
 	Stack string `yaml:"stack,omitempty"`
 	// IPv6 also proxies IPv6; otherwise IPv6 traffic bypasses the TUN.
@@ -57,6 +60,27 @@ type Device struct {
 	MAC  string `yaml:"mac"`
 	Name string `yaml:"name,omitempty"`
 }
+
+// TUN modes as shown to the user.
+const (
+	TunOff     = "off"
+	TunLocal   = "local"
+	TunGateway = "gateway"
+)
+
+// Mode is TunOff, TunLocal or TunGateway.
+func (g Gateway) Mode() string {
+	switch {
+	case !g.Enabled:
+		return TunOff
+	case g.LocalOnly:
+		return TunLocal
+	}
+	return TunGateway
+}
+
+// IsGateway reports whether the LAN is routed through this machine (system changes applied).
+func (g Gateway) IsGateway() bool { return g.Enabled && !g.LocalOnly }
 
 const (
 	DeviceModeAll      = "all"
@@ -84,7 +108,7 @@ type Tasks struct {
 
 type CoreSettings struct {
 	Channel CoreChannel `yaml:"channel"`
-	// Service is auto, systemd, systemd-user, openrc, procd or process.
+	// Service is auto, systemd, openrc, procd or process.
 	Service string `yaml:"service"`
 	// Location is where the core binary lives: "" (data dir), "compressed" (gzip in the data
 	// dir, unpacked into RAM at boot) or "ram" (RAM only, downloaded at boot). For small flash.
@@ -214,7 +238,7 @@ func (s *Settings) normalize() {
 	if s.Core.Channel != ChannelAlpha {
 		s.Core.Channel = ChannelStable
 	}
-	if s.Core.Service == "" {
+	if s.Core.Service == "" || s.Core.Service == "systemd-user" {
 		s.Core.Service = "auto"
 	}
 	// A TCP controller without a secret would be an open proxy-control endpoint.

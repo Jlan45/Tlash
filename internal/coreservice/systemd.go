@@ -11,42 +11,25 @@ import (
 
 type systemd struct {
 	spec     Spec
-	user     bool
 	unitPath string
 	run      runner
 }
 
-func newSystemd(spec Spec, user bool, run runner) (*systemd, error) {
-	dir := "/etc/systemd/system"
-	if user {
-		cfg, err := os.UserConfigDir()
-		if err != nil {
-			return nil, err
-		}
-		dir = filepath.Join(cfg, "systemd", "user")
-	}
-	return &systemd{spec: spec, user: user, unitPath: filepath.Join(dir, spec.Name+".service"), run: run}, nil
+func newSystemd(spec Spec, run runner) (*systemd, error) {
+	return &systemd{
+		spec:     spec,
+		unitPath: filepath.Join("/etc/systemd/system", spec.Name+".service"),
+		run:      run,
+	}, nil
 }
 
-func (s *systemd) Kind() Kind {
-	if s.user {
-		return KindSystemdUser
-	}
-	return KindSystemd
-}
+func (s *systemd) Kind() Kind { return KindSystemd }
 
 func (s *systemd) systemctl(ctx context.Context, args ...string) ([]byte, error) {
-	if s.user {
-		args = append([]string{"--user"}, args...)
-	}
 	return s.run(ctx, "systemctl", args...)
 }
 
 func (s *systemd) unit() string {
-	target := "multi-user.target"
-	if s.user {
-		target = "default.target"
-	}
 	pre := ""
 	if len(s.spec.PreStart) > 0 {
 		pre = "ExecStartPre=-" + s.spec.preStartLine() + "\n"
@@ -65,8 +48,8 @@ RestartSec=3
 LimitNOFILE=1048576
 
 [Install]
-WantedBy=%s
-`, pre, s.spec.commandLine(), target)
+WantedBy=multi-user.target
+`, pre, s.spec.commandLine())
 }
 
 func (s *systemd) Install(ctx context.Context) error {
@@ -138,12 +121,7 @@ func (s *systemd) SetAutoStart(ctx context.Context, on bool) error {
 	return err
 }
 
-func (s *systemd) LogHint() string {
-	if s.user {
-		return "journalctl --user -u " + s.spec.Name
-	}
-	return "journalctl -u " + s.spec.Name
-}
+func (s *systemd) LogHint() string { return "journalctl -u " + s.spec.Name }
 
 func firstLine(s string) string {
 	line, _, _ := strings.Cut(s, "\n")

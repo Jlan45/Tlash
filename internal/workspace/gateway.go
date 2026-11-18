@@ -44,6 +44,8 @@ type GatewayCheck struct {
 	Name   string
 	Level  CheckLevel
 	Detail string
+	// GatewayOnly checks only matter when the LAN is routed through this machine.
+	GatewayOnly bool
 }
 
 // gatewayPending is written when the gateway is turned on and removed on confirmation.
@@ -73,14 +75,16 @@ func (w *Workspace) GatewayDNSListen() string {
 // IsOpenWrt reports whether gateway integration targets OpenWrt (dnsmasq + fw4).
 func (w *Workspace) IsOpenWrt() bool { return hostSystem().OpenWrt }
 
-// GatewayPreflight checks the host can act as a gateway. CheckFail entries block enabling.
+// GatewayPreflight checks the host can run TUN, including the gateway-only checks (marked
+// GatewayOnly). CheckFail entries block enabling the modes they apply to.
 func (w *Workspace) GatewayPreflight(ctx context.Context) []GatewayCheck {
 	g := w.Settings().Gateway.WithDefaults()
 	dnsListen := w.GatewayDNSListen()
 	openwrt := hostSystem().OpenWrt
 	var checks []GatewayCheck
+	gwOnly := false
 	add := func(name string, level CheckLevel, detail string) {
-		checks = append(checks, GatewayCheck{Name: name, Level: level, Detail: detail})
+		checks = append(checks, GatewayCheck{Name: name, Level: level, Detail: detail, GatewayOnly: gwOnly})
 	}
 	if isRoot() {
 		add("root 权限", CheckOK, "")
@@ -100,6 +104,7 @@ func (w *Workspace) GatewayPreflight(ctx context.Context) []GatewayCheck {
 	}
 	switch {
 	case openwrt:
+		gwOnly = true
 		if _, err := os.Stat("/sbin/fw4"); err == nil {
 			add("防火墙 fw4", CheckOK, "将为 TUN 网卡添加防火墙区域")
 		} else {
@@ -110,22 +115,25 @@ func (w *Workspace) GatewayPreflight(ctx context.Context) []GatewayCheck {
 		} else {
 			add("dnsmasq", CheckWarn, "未找到 dnsmasq：局域网设备需要直接把 DNS 指向 "+dnsListen)
 		}
+		gwOnly = false
 	case hasNetfilter():
 		add("nftables / iptables", CheckOK, "")
 	default:
 		add("nftables / iptables", CheckWarn, "未找到 nft 或 iptables，auto-redirect 可能无法工作")
 	}
+	gwOnly = true
 	if g.DeviceMode == appsettings.DeviceModeSelected && len(g.Devices) == 0 {
 		add("代理范围", CheckFail, "“仅选中设备”模式下还没有选择任何设备")
 	}
 	// The DNS listener only matters before the gateway (and thus our listener) is on.
-	if !g.Enabled {
+	if !g.IsGateway() {
 		if err := checkListenable(dnsListen); err != nil {
 			add("DNS 监听 "+dnsListen, CheckFail, err.Error())
 		} else {
 			add("DNS 监听 "+dnsListen, CheckOK, "")
 		}
 	}
+	gwOnly = false
 	if ip := sshClientIP(); ip != "" {
 		add("SSH 保护", CheckOK, "当前 SSH 客户端 "+ip+" 将排除在代理之外")
 	}
@@ -203,14 +211,24 @@ func sshClientIP() string {
 	return f[0]
 }
 
-// EnableGateway turns the gateway on and returns the confirm deadline. Unless ConfirmGateway
-// is called by then, a detached guard process rolls everything back.
+// EnableGateway turns gateway mode on; see SetTunMode.
 func (w *Workspace) EnableGateway(ctx context.Context) (time.Time, error) {
+	return w.SetTunMode(ctx, appsettings.TunGateway)
+}
+
+// SetTunMode switches the TUN to mode. Turning it off happens at once; turning it on or
+// switching between local and gateway returns a confirm deadline: unless ConfirmGateway is
+// called by then, a detached guard process restores the previous state.
+func (w *Workspace) SetTunMode(ctx context.Context, mode string) (time.Time, error) {
+	if mode == appsettings.TunOff {
+		return time.Time{}, w.DisableGateway(ctx)
+	}
 	w.opMu.Lock()
 	defer w.opMu.Unlock()
+	local := mode == appsettings.TunLocal
 	var failed []string
 	for _, c := range w.GatewayPreflight(ctx) {
-		if c.Level == CheckFail {
+		if c.Level == CheckFail && (!local || !c.GatewayOnly) {
 			failed = append(failed, c.Name+"："+c.Detail)
 		}
 	}
@@ -219,35 +237,49 @@ func (w *Workspace) EnableGateway(ctx context.Context) (time.Time, error) {
 	}
 	prev := w.Settings().Gateway
 	next := prev.WithDefaults()
-	next.Enabled = true
+	next.Enabled, next.LocalOnly = true, local
 	if ip := sshClientIP(); ip != "" && !slices.Contains(next.ExcludeAddrs, ip) {
 		next.ExcludeAddrs = append(slices.Clone(next.ExcludeAddrs), ip)
 	}
+	if prev.Mode() == next.Mode() {
+		return time.Time{}, nil
+	}
 
-	st, err := hostSystem().Apply(ctx, next.IPv6, runtimeconfig.TunDevice, w.GatewayDNSListen())
-	if err != nil {
+	if err := w.syncSystemLocked(ctx, next); err != nil {
 		return time.Time{}, err
 	}
-	if err := writeJSON(w.sysStatePath(), st); err != nil {
-		_ = hostSystem().Revert(ctx, st, runtimeconfig.TunDevice)
-		return time.Time{}, err
+	// Switching again before confirming: rolling back must still reach the last confirmed state.
+	restore := prev
+	var old gatewayPending
+	hadPending := readJSON(w.pendingPath(), &old) == nil
+	if hadPending {
+		restore = old.Previous
 	}
-	pending := gatewayPending{Token: randomToken(), Deadline: time.Now().Add(GatewayConfirmWindow), Previous: prev}
+	// On failure, put back the earlier pending file so its guard keeps watching.
+	dropPending := func() {
+		if hadPending {
+			_ = writeJSON(w.pendingPath(), old)
+		} else {
+			_ = os.Remove(w.pendingPath())
+		}
+	}
+	pending := gatewayPending{Token: randomToken(), Deadline: time.Now().Add(GatewayConfirmWindow), Previous: restore}
 	if err := writeJSON(w.pendingPath(), pending); err != nil {
-		_ = w.revertSystemLocked(ctx)
+		_ = w.syncSystemLocked(ctx, prev)
+		dropPending()
 		return time.Time{}, err
 	}
 
 	w.mutateSettings(func(s *appsettings.Settings) { s.Gateway = next })
-	err = w.activateGatewayLocked(ctx)
+	err := w.activateGatewayLocked(ctx)
 	if err == nil {
 		err = w.saveSettingsLocked()
 	}
 	if err != nil {
 		w.mutateSettings(func(s *appsettings.Settings) { s.Gateway = prev })
 		_ = w.applyLocked(ctx)
-		_ = w.revertSystemLocked(ctx)
-		_ = os.Remove(w.pendingPath())
+		_ = w.syncSystemLocked(ctx, prev)
+		dropPending()
 		return time.Time{}, err
 	}
 	if err := startGuard(w, pending.Token); err != nil {
@@ -256,6 +288,26 @@ func (w *Workspace) EnableGateway(ctx context.Context) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("无法启动回滚保护进程: %w", err)
 	}
 	return pending.Deadline, nil
+}
+
+// syncSystemLocked makes the host's forwarding/firewall/dnsmasq changes match g: applied in
+// gateway mode, reverted otherwise.
+func (w *Workspace) syncSystemLocked(ctx context.Context, g appsettings.Gateway) error {
+	if !g.IsGateway() {
+		return w.revertSystemLocked(ctx)
+	}
+	if _, err := os.Stat(w.sysStatePath()); err == nil {
+		return nil
+	}
+	st, err := hostSystem().Apply(ctx, g.IPv6, runtimeconfig.TunDevice, w.GatewayDNSListen())
+	if err != nil {
+		return err
+	}
+	if err := writeJSON(w.sysStatePath(), st); err != nil {
+		_ = hostSystem().Revert(ctx, st, runtimeconfig.TunDevice)
+		return err
+	}
+	return nil
 }
 
 // activateGatewayLocked applies the config, starting the core if it isn't running.
@@ -300,12 +352,12 @@ func (w *Workspace) rollbackLocked(ctx context.Context, token string) (bool, err
 		return false, nil
 	}
 	w.mutateSettings(func(s *appsettings.Settings) { s.Gateway = p.Previous })
-	errs := []error{w.saveSettingsLocked(), w.applyLocked(ctx), w.revertSystemLocked(ctx)}
+	errs := []error{w.saveSettingsLocked(), w.applyLocked(ctx), w.syncSystemLocked(ctx, p.Previous)}
 	_ = os.Remove(w.pendingPath())
 	return true, errors.Join(errs...)
 }
 
-// DisableGateway turns a confirmed gateway off.
+// DisableGateway turns the TUN off (either mode).
 func (w *Workspace) DisableGateway(ctx context.Context) error {
 	w.opMu.Lock()
 	defer w.opMu.Unlock()
@@ -324,7 +376,7 @@ func (w *Workspace) UpdateGateway(ctx context.Context, fn func(*appsettings.Gate
 	fn(&next)
 	w.mutateSettings(func(s *appsettings.Settings) { s.Gateway = next })
 	if next.Enabled {
-		if next.IPv6 != prev.IPv6 || next.DNSListen != prev.DNSListen {
+		if next.IsGateway() && (next.IPv6 != prev.IPv6 || next.DNSListen != prev.DNSListen) {
 			// Forwarding and dnsmasq's upstream follow these options.
 			if err := w.reapplySystemLocked(ctx, next.IPv6); err != nil {
 				w.mutateSettings(func(s *appsettings.Settings) { s.Gateway = prev })
@@ -364,7 +416,7 @@ func (w *Workspace) revertSystemLocked(ctx context.Context) error {
 // PrepareGateway runs before the core starts (service pre-start hook): firewall rules don't
 // survive a reboot, so re-add them while the gateway is on.
 func (w *Workspace) PrepareGateway(ctx context.Context) error {
-	if !w.Settings().Gateway.Enabled {
+	if !w.Settings().Gateway.IsGateway() {
 		return nil
 	}
 	var st gatewaysys.State

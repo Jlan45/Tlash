@@ -116,7 +116,7 @@ func opsCommands(f *rootFlags) []*cobra.Command {
 
 func statusCmd(f *rootFlags) *cobra.Command {
 	return &cobra.Command{
-		Use: "status", Short: "查看内核、订阅、模式、网关和速率", Args: cobra.NoArgs,
+		Use: "status", Short: "查看内核、订阅、模式、TUN 和速率", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			c, ws, err := apiClient(f)
 			if err != nil {
@@ -164,14 +164,11 @@ func statusCmd(f *rootFlags) *cobra.Command {
 			}
 			if ws != nil {
 				g := ws.Settings().Gateway
-				gw := "未开启"
-				if g.Enabled {
-					gw = "已开启"
-					if _, pending := ws.PendingGateway(); pending {
-						gw += "（等待确认）"
-					}
+				gw := map[string]string{appsettings.TunOff: "关闭", appsettings.TunLocal: "仅本机", appsettings.TunGateway: "本机 + 局域网（网关）"}[g.Mode()]
+				if _, pending := ws.PendingGateway(); pending {
+					gw += "（等待确认）"
 				}
-				row("网关", gw)
+				row("TUN", gw)
 			}
 			// One traffic sample (mihomo pushes one per second).
 			sample := make(chan mihomoapi.Traffic, 1)

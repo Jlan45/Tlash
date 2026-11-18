@@ -163,3 +163,52 @@ func containsAll(s string, subs ...string) bool {
 	}
 	return true
 }
+
+func TestTunLocalModeAndSwitching(t *testing.T) {
+	procSys, guards := fakeHost(t)
+	w := gatewayWorkspace(t)
+	ctx := context.Background()
+	defer w.Stop(ctx)
+
+	if _, err := w.SetTunMode(ctx, appsettings.TunLocal); err != nil {
+		t.Fatal(err)
+	}
+	if ipForward(t, procSys) != "0\n" {
+		t.Fatal("local mode enabled forwarding")
+	}
+	cfg, _ := os.ReadFile(w.ConfigPath)
+	if !containsAll(string(cfg), "tun:", "auto-route: true") || containsAll(string(cfg), "listen: 127.0.0.1") {
+		t.Fatalf("local-mode config:\n%s", cfg)
+	}
+	if err := w.ConfirmGateway(); err != nil {
+		t.Fatal(err)
+	}
+
+	// local → gateway applies the host changes; rolling back returns to confirmed local mode.
+	if _, err := w.SetTunMode(ctx, appsettings.TunGateway); err != nil {
+		t.Fatal(err)
+	}
+	if ipForward(t, procSys) != "1\n" || len(*guards) != 2 {
+		t.Fatalf("gateway switch: forward %q guards %d", ipForward(t, procSys), len(*guards))
+	}
+	// Switching again unconfirmed still rolls back to the confirmed local mode.
+	if _, err := w.SetTunMode(ctx, appsettings.TunLocal); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.SetTunMode(ctx, appsettings.TunGateway); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.RollbackGateway(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if m := w.Settings().Gateway.Mode(); m != appsettings.TunLocal || ipForward(t, procSys) != "0\n" {
+		t.Fatalf("after rollback mode %s forward %q", m, ipForward(t, procSys))
+	}
+
+	if _, err := w.SetTunMode(ctx, appsettings.TunOff); err != nil {
+		t.Fatal(err)
+	}
+	if cfg, _ := os.ReadFile(w.ConfigPath); containsAll(string(cfg), "auto-route") {
+		t.Fatal("tun still configured after off")
+	}
+}

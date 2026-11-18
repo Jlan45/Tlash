@@ -77,20 +77,6 @@ func TestWorkspaceLifecycle(t *testing.T) {
 	runLifecycle(t, w)
 }
 
-// Opt-in: installs a real systemd user unit (with a test-only name) on this machine.
-func TestWorkspaceLifecycleSystemdUser(t *testing.T) {
-	if os.Getenv("TLASH_TEST_SYSTEMD_USER") == "" {
-		t.Skip("TLASH_TEST_SYSTEMD_USER not set")
-	}
-	ServiceName = "tlash-mihomo-test"
-	defer func() { ServiceName = "tlash-mihomo" }()
-	w := openTestWorkspace(t, "systemd-user")
-	runLifecycle(t, w)
-	if ok, _ := w.Service().AutoStart(context.Background()); ok {
-		t.Error("autostart should default to off")
-	}
-}
-
 func runLifecycle(t *testing.T, w *Workspace) {
 	ctx := context.Background()
 	src := t.TempDir()

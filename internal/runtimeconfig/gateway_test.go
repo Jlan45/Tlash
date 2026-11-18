@@ -111,3 +111,14 @@ func TestGatewayConfigValidates(t *testing.T) {
 		t.Fatalf("mihomo rejected gateway config: %v\n%s", err, out)
 	}
 }
+
+func TestTunOffOverridesProfile(t *testing.T) {
+	profile := "tun:\n  enable: true\n  stack: system\nproxies: []\n"
+	out, err := Generate([]byte(profile), nil, appsettings.Managed{}, &appsettings.Gateway{}, "/s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "enable: false") || !strings.Contains(string(out), "stack: system") {
+		t.Fatalf("profile tun not disabled:\n%s", out)
+	}
+}

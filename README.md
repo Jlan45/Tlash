@@ -29,8 +29,8 @@
 - **覆写**：YAML 片段修改订阅配置（如在规则前插入自定义规则），可排序、限定订阅；标签页：内容 / 最终配置预览
 - **连接**：实时连接与速率，详情，关闭单个或全部
 - **规则**：命中统计、临时停用、规则集更新
-- **网关（透明代理）**：让局域网设备不装客户端就走代理（旁路由 / 本机），基于 mihomo TUN；按 MAC 黑名单或白名单选择设备，大陆 IP 可在内核层直接放行，仅 IPv4 或 IPv4 + IPv6；开启后 60 秒内需确认，否则自动回滚（SSH 断开也会回滚）
-- **设置**：内核下载与回滚、服务托管与开机自启、接管设置（端口 / 局域网 / 日志级别 / 控制接口等）、DNS 与嗅探、GEO 与 Web 面板、定时任务、代理环境变量（`eval "$(tlash env)"`）、DNS 查询等工具
+- **TUN（透明代理）**：支持**仅本机**或**本机 + 局域网（网关 / 旁路由）**两种模式，基于 mihomo TUN；网关模式下可按 MAC 黑名单或白名单选择设备，大陆 IP 可在内核层直接放行，支持仅 IPv4 或 IPv4 + IPv6；开启后 60 秒内需确认，否则自动回滚（SSH 断开也会回滚）
+- **设置**：内核下载与回滚、服务托管与开机自启、接管设置（端口 / 局域网 / 日志级别 / 控制接口等）、DNS 与嗅探、GEO 与 Web 面板、定时任务、代理环境变量（`eval "$(tlash env)"`）、DNS 查询等工具；开关和枚举项用 `←` `→` 或 `Enter` 直接切换
 
 ## 安装
 
@@ -44,19 +44,19 @@ curl -fsSL https://raw.githubusercontent.com/Jlan45/Tlash/main/scripts/install.s
 
 两个版本：**标准版**内置 zashboard 面板（约 13 MB）；**精简版**不带面板、经 UPX 压缩（约 2.5 MB），给闪存小的路由器用。OpenWrt 上闪存不足 32 MB 时自动安装精简版，也可用 `variant=full` / `variant=lite` 指定。
 
-root 安装到 `/usr/local/bin/tlash`，数据在 `/etc/tlash`；普通用户安装到 `~/.local/bin/tlash`，数据在 `~/.local/share/tlash`。也可以从 [Releases](https://github.com/Jlan45/Tlash/releases) 手动下载（linux amd64 / arm64 / armv7 / 386）。
+Tlash 以 root 运行（非 root 执行会自动通过 `sudo` 提权），安装到 `/usr/local/bin/tlash`（OpenWrt 为 `/usr/bin/tlash`），数据在 `/etc/tlash`。也可以从 [Releases](https://github.com/Jlan45/Tlash/releases) 手动下载（linux amd64 / arm64 / armv7 / 386）。
 
 ## 使用
 
 运行 `tlash`，按“状态”面板的引导：
 
-1. `7` 设置 → 内核，按 `D` 下载内核（国内服务器先按 `M` 设置下载镜像，或按 `i` 导入本地文件）
+1. `7` 设置 → 内核，按 `D` 下载内核（国内服务器可在「下载镜像」按回车设置下载镜像，或按 `i` 导入本地文件）
 2. `2` 订阅，按 `a` 添加订阅链接
 3. `1` 状态，按 `s` 启动
 
-数据目录：root 为 `/etc/tlash`，普通用户为 `~/.local/share/tlash`，可用 `--dir` 指定。Tlash 生成的运行配置只通过 unix socket 暴露控制接口；需要 Web 面板时在“设置 → 接管”里开启 TCP 控制接口（会强制设置密钥）。
+数据目录为 `/etc/tlash`，可用 `--dir` 指定。Tlash 生成的运行配置只通过 unix socket 暴露控制接口；需要 Web 面板时在“设置 → 接管”里开启 TCP 控制接口（会强制设置密钥）。
 
-连接一个不由 Tlash 管理的 mihomo（只能查看和切换，不管理配置与进程）：
+连接一个不由 Tlash 管理的 mihomo（只能查看和切换，不管理配置与进程；无需 root）：
 
 ```sh
 tlash --controller /path/to/mihomo.sock
@@ -69,18 +69,18 @@ tlash --controller 127.0.0.1:9090 --secret <secret>
 
 | 命令 | 作用 |
 |---|---|
-| `tlash status` | 内核、订阅流量与到期、模式与端口、网关、速率 |
+| `tlash status` | 内核、订阅流量与到期、模式与端口、TUN、速率 |
 | `tlash start` / `stop` / `restart` | 启停内核（`restart` 会重新生成配置） |
 | `tlash mode rule\|global\|direct` | 切换出站模式 |
 | `tlash sub list` / `update [名称]` / `use 名称` / `add 链接` | 订阅管理，`update` 不带名称时更新全部 |
 | `tlash core upgrade [--channel alpha]` | 下载最新内核，运行中自动重启 |
 | `tlash update` | 升级 Tlash 自身（保持标准版 / 精简版，校验 sha256） |
 | `tlash uninstall [--purge]` | 卸载；`--purge` 同时删除数据 |
-| `tlash web` / `tlash env` / `tlash gateway check\|off` | 面板地址 / 代理环境变量 / 网关检查与救急关闭 |
+| `tlash web` / `tlash env` / `tlash tun check\|off` | 面板地址 / 代理环境变量 / TUN 检查与救急关闭（`gateway` 为别名） |
 
 ## Web 面板
 
-在 设置 → 资源 → Web 面板 按 `w` 选择 zashboard（标准版内置，选择后直接释放，无需访问 GitHub；`P` 在线更新到最新版）或 metacubexd（在线下载），并在 设置 → 接管 开启 TCP 控制接口（`127.0.0.1:9090` 仅本机，`0.0.0.0:9090` 局域网可访问）。然后运行：
+在 设置 → 资源 → Web 面板 用 `←` `→` / `Enter` 选择 zashboard（标准版内置，选择后直接释放，无需访问 GitHub；`P` 在线更新到最新版）或 metacubexd（在线下载），并在 设置 → 接管 开启 TCP 控制接口（`127.0.0.1:9090` 仅本机，`0.0.0.0:9090` 局域网可访问）。然后运行：
 
 ```sh
 tlash web
@@ -88,12 +88,12 @@ tlash web
 
 打印访问地址、后端地址和密钥；控制接口只监听本机时，还会打印可直接复制的 SSH 隧道命令。
 
-## 用作旁路由
+## 透明代理（TUN / 旁路由）
 
-需要 root。在 `7` 设置 → 网关 查看环境检查，按 `t` 开启，确认网络正常后按 `y` 保留。然后在需要代理的设备上把**网关**和 **DNS** 都设为这台机器的局域网 IP（或在主路由的 DHCP 里下发）。
+在 `7` 设置 → TUN 查看环境检查，进入「模式」行用 `←` `→` 切换为 **仅本机** 或 **本机 + 局域网（网关）**，确认网络正常后按 `y` 保留（60 秒内未确认会自动回滚）。作为旁路由时，在需要代理的设备上把**网关**和 **DNS** 都设为这台机器的局域网 IP（或在主路由的 DHCP 里下发）。
 
 - 53 端口被占用（如 systemd-resolved）时，环境检查会提示，把“DNS 监听”改为本机局域网 IP，例如 `192.168.1.2:53`
-- 出问题且界面用不了时，在本机控制台执行 `tlash gateway off` 立即关闭并还原
+- 出问题且界面用不了时，在本机控制台执行 `tlash tun off`（或 `tlash gateway off`）立即关闭并还原
 
 ## 用作 OpenWrt 主路由
 
@@ -101,9 +101,9 @@ tlash web
 
 1. 安装：`wget -qO- https://raw.githubusercontent.com/Jlan45/Tlash/main/scripts/install.sh | sh`（会提示缺少的 `kmod-tun` 等依赖）
 2. 闪存小于约 40 MB 时，先在 `7` 设置 → 内核 把“存放位置”改为**压缩存放**（闪存只存 .gz，开机解压到内存）或**只放内存**（开机自动下载），再按 `D` 下载内核
-3. 添加订阅并启动后，在 设置 → 网关 按 `t` 开启
+3. 添加订阅并启动后，在 设置 → TUN 将「模式」切换为 **本机 + 局域网（网关）**
 
-开启网关时 Tlash 会通过 uci 把 dnsmasq 的上游改为 mihomo（`127.0.0.1#1053`），并为 TUN 网卡添加防火墙区域；关闭或卸载时按原样还原。局域网设备无需任何设置。
+开启网关模式时 Tlash 会通过 uci 把 dnsmasq 的上游改为 mihomo（`127.0.0.1#1053`），并为 TUN 网卡添加防火墙区域；关闭或卸载时按原样还原。局域网设备无需任何设置。
 
 ## 开发
 
